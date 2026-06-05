@@ -609,6 +609,89 @@ VISUAL_METRIC_DEFINITIONS = {
         "definition": "마감차수 실적 합계를 마감차수 목표 합계로 나눈 비율입니다.",
     },
 }
+VISUAL_READING_GUIDES = {
+    "scenario_amount": {
+        "title": "월말 예상 실적 비교",
+        "steps": (
+            "먼저 공식 월 목표를 기준선으로 잡습니다.",
+            "월말 예상 실적(보정 전)이 목표보다 낮은지, 높은지 확인합니다.",
+            "전략 반영 후 예상이 목표선을 회복하는지 보고 선택 전략의 효과를 판단합니다.",
+        ),
+        "decision": "전략 반영 후 예상이 목표보다 낮으면 보정 강도가 부족하고, 목표보다 높으면 초과분 관리 전략을 함께 봅니다.",
+    },
+    "scenario_status": {
+        "title": "목표 상태 확인",
+        "steps": (
+            "목표 대비 차이는 양수면 초과 예상, 음수면 미달 예상으로 읽습니다.",
+            "미달 구간은 목표 미달 예상분과 목표 달성에 필요한 추가 실적을 함께 봅니다.",
+            "초과 구간은 초과 예상분이 운영상 버퍼인지, 상향 목표로 전환할 수 있는지 확인합니다.",
+        ),
+        "decision": "부족분이 큰 시나리오는 실행 부담이 높고, 초과분이 큰 시나리오는 품질 리스크와 Stretch 전환 가능성을 검토합니다.",
+    },
+    "scenario_matrix": {
+        "title": "시나리오 숫자표",
+        "steps": (
+            "행은 예측모델(F1~F3), 열은 운영전략(P/O/N)을 뜻합니다.",
+            "먼저 같은 행 안에서 전략별 월말 예상 실적 차이를 비교합니다.",
+            "그다음 같은 열 안에서 예측모델별 민감도를 비교해 보수적/공격적 전망 차이를 봅니다.",
+        ),
+        "decision": "숫자가 가장 큰 조합보다, KPI 위험등급과 실행 가능한 보정 전략까지 같이 맞는 조합을 선택합니다.",
+    },
+    "target_allocation": {
+        "title": "일자별 목표 변화",
+        "steps": (
+            "기존 일 목표를 해당 날짜의 원래 계획선으로 봅니다.",
+            "추가 배분 목표는 부족분을 메우기 위해 새로 얹은 부담입니다.",
+            "수정 후 일 목표는 기존 목표와 추가 배분이 반영된 최종 관리 목표입니다.",
+        ),
+        "decision": "수정 후 일 목표가 특정 날짜에 과도하게 몰리면 배분 전략이나 상한 설정을 재검토합니다.",
+    },
+    "target_cap": {
+        "title": "상한과 예상 실적",
+        "steps": (
+            "일별 허용 상한은 해당 날짜에 배분 가능한 최대 목표선입니다.",
+            "수정 후 예상 일 실적이 상한보다 낮은지 확인해 목표가 현실적인지 봅니다.",
+            "상한에 계속 붙어 있으면 잔여 기간 전체의 실행 여력이 부족하다는 신호입니다.",
+        ),
+        "decision": "상한을 자주 넘거나 근접하면 마감일/비마감일 배분 방식 또는 월 목표 상향 부담을 다시 봅니다.",
+    },
+    "close_cycle_amount": {
+        "title": "마감차수별 목표와 실적",
+        "steps": (
+            "각 마감차수의 목표 합계를 기준으로 잡습니다.",
+            "실적 합계가 목표 합계보다 높으면 해당 차수는 초과 달성, 낮으면 미달입니다.",
+            "미달 차수가 반복되는지, 특정 마감차수에서만 흔들리는지 흐름을 봅니다.",
+        ),
+        "decision": "최근 마감차수에서 미달이 커질수록 남은 기간 보정 필요성이 높아집니다.",
+    },
+    "close_cycle_rate": {
+        "title": "마감차수별 달성률",
+        "steps": (
+            "100%를 기준선으로 두고 각 마감차수가 목표를 넘겼는지 확인합니다.",
+            "달성률이 상승 중인지 하락 중인지 방향을 봅니다.",
+            "최근 2개 마감차수의 흐름은 F2 예측모델의 근거가 되므로 특히 따로 봅니다.",
+        ),
+        "decision": "최근 달성률이 100% 아래로 내려가면 월말 예상보다 실제 마감 리스크를 더 보수적으로 봅니다.",
+    },
+    "strategy_amount": {
+        "title": "전략별 월 목표 수준",
+        "steps": (
+            "공식 월 목표와 월말 예상 실적의 간격을 먼저 봅니다.",
+            "운영전략상 월 목표 수준이 공식 목표와 같은지, 상향됐는지 확인합니다.",
+            "상향된 목표가 예상 실적 안에서 감당되는지 비교합니다.",
+        ),
+        "decision": "상향 목표가 예상 실적보다 높으면 공격적인 전략이고, 공식 목표를 유지하면 방어적인 전략입니다.",
+    },
+    "strategy_buffer": {
+        "title": "전략별 초과/완화 수준",
+        "steps": (
+            "초과 예상분이 있다면 안전버퍼, Stretch 전환분, 품질관리 여유분으로 나뉘는 구조를 봅니다.",
+            "목표 미달이면 목표 달성에 필요한 추가 실적이 얼마나 남는지 봅니다.",
+            "각 전략이 숫자를 키우는 전략인지, 리스크를 줄이는 전략인지 구분합니다.",
+        ),
+        "decision": "초과분이 크면 성장 전환과 버퍼 유지의 균형을, 부족분이 크면 실제 추가 실행 가능성을 우선 판단합니다.",
+    },
+}
 
 
 def main() -> None:
@@ -1508,6 +1591,16 @@ def build_visual_metric_definition_df(metric_columns: tuple[str, ...]) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+def build_visual_reading_guide(guide_key: str) -> dict[str, object]:
+    """Return the reading logic for a visual block."""
+    guide = VISUAL_READING_GUIDES.get(guide_key, {})
+    return {
+        "title": guide.get("title", ""),
+        "steps": tuple(guide.get("steps", ())),
+        "decision": guide.get("decision", ""),
+    }
+
+
 def build_forecast_definition_df() -> pd.DataFrame:
     """Return display definitions for F1/F2/F3 forecast models."""
     return pd.DataFrame(
@@ -2263,6 +2356,7 @@ def _render_visuals(
     close_cycle_df: pd.DataFrame,
 ) -> None:
     st.subheader("시각화")
+    st.caption("그래프는 기준선 확인 → 차이 확인 → 실행 판단 순서로 읽습니다.")
     scenario_tab, target_tab, close_cycle_tab = st.tabs(
         ["시나리오별 예상", "잔여 목표/전략 수준", "마감차수 흐름"]
     )
@@ -2284,14 +2378,14 @@ def _render_visuals(
                 (*scenario_amount_columns, *scenario_status_columns)
             )
             if scenario_amount_columns:
-                st.caption("월말 예상 실적 비교: 공식 목표, 보정 전 예상, 전략 반영 후 예상, 운영전략상 월 목표 수준을 비교합니다.")
+                _render_chart_reading_guide("scenario_amount")
                 _render_grouped_bar_chart(scenario_chart_data, scenario_amount_columns)
             if scenario_status_columns:
-                st.caption("목표 상태 확인: 미달이면 부족 예상분과 추가 필요 실적을, 초과달성이면 초과 예상분과 목표 대비 차이를 봅니다.")
+                _render_chart_reading_guide("scenario_status")
                 _render_grouped_bar_chart(scenario_chart_data, scenario_status_columns)
 
         value_matrix = build_scenario_value_matrix(scenario_df)
-        st.caption("시나리오 숫자표: 각 예측모델/운영전략 조합의 월말 예상 실적을 억원 단위로 표시합니다.")
+        _render_chart_reading_guide("scenario_matrix")
         st.dataframe(value_matrix.map(format_amount), use_container_width=True)
 
     with target_tab:
@@ -2303,9 +2397,9 @@ def _render_visuals(
             _render_strategy_level_visuals(scenario_df, selected_scenario_id)
         else:
             _render_visual_metric_definitions((*target_bar_columns, *target_line_columns))
-            st.caption("일자별 목표 변화: 기존 목표에 추가 배분이 더해져 수정 후 목표가 됩니다.")
+            _render_chart_reading_guide("target_allocation")
             _render_grouped_bar_chart(target_chart_data, target_bar_columns)
-            st.caption("상한과 예상 실적: 수정 후 목표가 허용 상한 안에 있는지, 예상 일 실적은 어느 정도인지 봅니다.")
+            _render_chart_reading_guide("target_cap")
             _render_line_chart(target_chart_data, target_line_columns)
 
     with close_cycle_tab:
@@ -2318,9 +2412,9 @@ def _render_visuals(
         if close_cycle_chart_data.empty:
             st.info("마감 사이클 차트 데이터 없음")
         else:
-            st.caption("마감차수별 목표와 실적: 각 마감차수 기간의 목표 합계와 실적 합계를 비교합니다.")
+            _render_chart_reading_guide("close_cycle_amount")
             _render_grouped_bar_chart(close_cycle_chart_data, close_cycle_bar_columns)
-            st.caption("마감차수별 달성률: 실적 합계가 목표 합계 대비 어느 정도였는지 표시합니다.")
+            _render_chart_reading_guide("close_cycle_rate")
             _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
 
 
@@ -2356,10 +2450,10 @@ def _render_strategy_level_visuals(
         (*strategy_amount_columns, *strategy_buffer_columns)
     )
     if strategy_amount_columns:
-        st.caption("전략별 월 목표 수준: 공식 월 목표, 월말 예상 실적, 운영전략상 월 목표 수준을 비교합니다.")
+        _render_chart_reading_guide("strategy_amount")
         _render_grouped_bar_chart(strategy_chart_data, strategy_amount_columns)
     if strategy_buffer_columns:
-        st.caption("전략별 초과/완화 수준: 초과 예상분, 안전버퍼, Stretch 전환분, 품질관리 여유분을 비교합니다.")
+        _render_chart_reading_guide("strategy_buffer")
         _render_grouped_bar_chart(strategy_chart_data, strategy_buffer_columns)
 
     strategy_table = build_strategy_level_table(scenario_df, selected_scenario_id)
@@ -2495,10 +2589,29 @@ def _chart_tooltip_value_title(metric_columns: tuple[str, ...]) -> str:
     return "값"
 
 
+def _render_chart_reading_guide(guide_key: str) -> None:
+    guide = build_visual_reading_guide(guide_key)
+    title = str(guide.get("title") or "").strip()
+    steps = tuple(guide.get("steps") or ())
+    decision = str(guide.get("decision") or "").strip()
+    if not title or not steps:
+        return
+
+    st.markdown(f"**{title} 읽는 법**")
+    for index, step in enumerate(steps, start=1):
+        st.markdown(f"{index}. {step}")
+    if decision:
+        st.caption(f"판단 기준: {decision}")
+
+
 def _render_visual_metric_definitions(metric_columns: tuple[str, ...]) -> None:
-    st.markdown("**수치 정의**")
-    for row in build_visual_metric_definition_df(metric_columns).to_dict("records"):
-        st.markdown(f"- **{row['범례']} ({row['단위']})**: {row['수치 의미']}")
+    definition_df = build_visual_metric_definition_df(metric_columns)
+    if definition_df.empty:
+        return
+
+    with st.expander("범례와 수치 정의", expanded=False):
+        for row in definition_df.to_dict("records"):
+            st.markdown(f"- **{row['범례']} ({row['단위']})**: {row['수치 의미']}")
 
 
 def _load_uploaded_input(uploaded_file: Any) -> pd.DataFrame:
