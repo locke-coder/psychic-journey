@@ -1,0 +1,7 @@
+pandas
+openpyxl
+streamlit
+altair>=5
+pytest
+pydantic
+pyyaml

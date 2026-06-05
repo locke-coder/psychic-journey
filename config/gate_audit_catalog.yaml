@@ -1,0 +1,541 @@
+gates:
+  - gate_id: G09
+    gate_name: Forecast Models Gate
+    phase: forecast_models
+    required_files:
+      - src/forecast_models.py
+      - tests/test_forecast_models.py
+    pytest_targets:
+      - tests/test_forecast_models.py
+    required_keywords:
+      - target_status
+      - target_variance
+      - surplus_to_target
+      - UNDER_TARGET
+      - ON_TARGET
+      - OVER_TARGET
+      - gap_to_target
+      - forecast_amount
+      - monthly_target
+    required_test_patterns:
+      - file: tests/test_forecast_models.py
+        label: OVER_TARGET status assertion
+        any_of:
+          - 'target_status"] == OVER_TARGET'
+          - "target_status'] == OVER_TARGET"
+      - file: tests/test_forecast_models.py
+        label: surplus_to_target positive assertion
+        any_of:
+          - 'surplus_to_target"] > 0'
+          - "surplus_to_target'] > 0"
+          - 'surplus_to_target"] == pytest.approx(40.0)'
+          - "surplus_to_target'] == pytest.approx(40.0)"
+      - file: tests/test_forecast_models.py
+        label: gap_to_target zero or max guard assertion
+        any_of:
+          - 'gap_to_target"] == 0'
+          - "gap_to_target'] == 0"
+          - 'gap_to_target"] == pytest.approx(0)'
+          - "gap_to_target'] == pytest.approx(0)"
+          - 'gap_to_target"] == pytest.approx(0.0)'
+          - "gap_to_target'] == pytest.approx(0.0)"
+          - "max(0,"
+          - "max(0.0,"
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    pass_conditions:
+      - Forecast outputs expose target status, target variance, and surplus fields.
+      - Forecast status separates UNDER_TARGET, ON_TARGET, and OVER_TARGET.
+      - Close-day logic is based only on is_close_day.
+
+  - gate_id: G10
+    gate_name: Provision / Overachievement Gate
+    phase: provision_overachievement
+    required_files:
+      - src/provision_models.py
+      - src/overachievement_models.py
+      - tests/test_provision_models.py
+      - tests/test_overachievement_models.py
+    pytest_targets:
+      - tests/test_provision_models.py
+      - tests/test_overachievement_models.py
+    required_keywords:
+      - O1_TARGET_HOLD_BUFFER
+      - O2_STRETCH_TARGET_CAPTURE
+      - O3_QUALITY_GUARD_RELIEF
+      - stretch_capture_rate
+      - stretch_uplift
+      - revised_monthly_target
+      - remaining_surplus_buffer
+      - minimum_remaining_to_hit_target
+      - relief_amount
+      - surplus_to_target
+      - OVER_TARGET
+    required_test_patterns:
+      - file: tests/test_overachievement_models.py
+        label: O1 strategy test exists
+        any_of:
+          - test_o1_holds_target_and_keeps_surplus_as_buffer
+      - file: tests/test_overachievement_models.py
+        label: O1 required_uplift remains zero
+        any_of:
+          - 'required_uplift"] == pytest.approx(0.0)'
+          - "required_uplift'] == pytest.approx(0.0)"
+      - file: src/overachievement_models.py
+        label: O2 stretch_capture_rate default is 0.5
+        any_of:
+          - '_config_get(config, "stretch_capture_rate", 0.5)'
+      - file: tests/test_overachievement_models.py
+        label: O2 default captures half of surplus
+        any_of:
+          - test_o2_captures_half_of_surplus_as_stretch_target_by_default
+      - file: src/overachievement_models.py
+        label: O3 quality guard wording
+        any_of:
+          - 계약 품질
+          - 품질
+      - file: src/overachievement_models.py
+        label: O3 cancellation and payment risk wording
+        any_of:
+          - 취소
+          - 철회
+          - 미결제
+      - file: tests/test_provision_models.py
+        label: CAPACITY_LIMITED status assertion
+        any_of:
+          - 'status"] == CAPACITY_LIMITED'
+          - "status'] == CAPACITY_LIMITED"
+      - file: tests/test_provision_models.py
+        label: CAPACITY_LIMITED keeps unallocated uplift visible
+        any_of:
+          - 'unallocated_uplift"] >= 0'
+          - "unallocated_uplift'] >= 0"
+          - 'unallocated_uplift"] == pytest.approx(3.0)'
+          - "unallocated_uplift'] == pytest.approx(3.0)"
+    forbidden_context_patterns:
+      - label: CAPACITY_LIMITED must not be shown as achievable
+        anchor: CAPACITY_LIMITED
+        forbidden_any:
+          - 목표 달성 가능
+          - 목표달성 가능
+          - 목표 달성이 가능
+          - achievable
+          - can hit target
+        window: 3
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    pass_conditions:
+      - Overachievement strategies O1, O2, and O3 are implemented.
+      - Overachievement metrics expose stretch, buffer, and relief amounts.
+      - Provision scenarios remain available for under-target forecasts.
+
+  - gate_id: G12
+    gate_name: Scenario Runner Gate
+    phase: scenario_runner
+    required_files:
+      - src/scenario_runner.py
+      - tests/test_scenario_runner.py
+    pytest_targets:
+      - tests/test_scenario_runner.py
+    required_keywords:
+      - target_status
+      - strategy_type
+      - PROVISION
+      - OVERACHIEVEMENT
+      - NEUTRAL
+      - OVER_TARGET
+      - UNDER_TARGET
+      - ON_TARGET
+      - O1_TARGET_HOLD_BUFFER
+      - O2_STRETCH_TARGET_CAPTURE
+      - O3_QUALITY_GUARD_RELIEF
+      - surplus_to_target
+    required_test_patterns:
+      - file: tests/test_scenario_runner.py
+        label: scenario grid keeps nine rows
+        any_of:
+          - "assert result.shape[0] == 9"
+      - file: tests/test_scenario_runner.py
+        label: UNDER_TARGET branch remains covered
+        any_of:
+          - 'set(result["target_status"]) == {UNDER_TARGET}'
+          - "set(result['target_status']) == {UNDER_TARGET}"
+      - file: tests/test_scenario_runner.py
+        label: P1 scenario remains covered
+        any_of:
+          - "assert (F1_CUMULATIVE_RATE, P1_ALL_REMAINING) in combinations"
+      - file: tests/test_scenario_runner.py
+        label: P2 scenario remains covered
+        any_of:
+          - "assert (F2_LAST_TWO_CLOSES, P2_CLOSE_DAY_FOCUSED) in combinations"
+      - file: tests/test_scenario_runner.py
+        label: P3 scenario remains covered
+        any_of:
+          - "assert (F3_DAY_CLOSE_WEIGHTED, P3_NON_CLOSE_DAY_FOCUSED) in combinations"
+      - file: tests/test_scenario_runner.py
+        label: OVER_TARGET branch returns O1
+        any_of:
+          - "        O1_TARGET_HOLD_BUFFER,"
+      - file: tests/test_scenario_runner.py
+        label: OVER_TARGET branch returns O2
+        any_of:
+          - "        O2_STRETCH_TARGET_CAPTURE,"
+      - file: tests/test_scenario_runner.py
+        label: OVER_TARGET branch returns O3
+        any_of:
+          - "        O3_QUALITY_GUARD_RELIEF,"
+      - file: tests/test_scenario_runner.py
+        label: OVER_TARGET branch is not reduced to NO_GAP
+        any_of:
+          - '"NO_GAP" not in set(result["status"])'
+          - "'NO_GAP' not in set(result['status'])"
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    pass_conditions:
+      - Scenario Runner branches UNDER_TARGET, ON_TARGET, and OVER_TARGET.
+      - OVER_TARGET scenarios use overachievement strategies, not NO_GAP only.
+      - Scenario output includes target_status and surplus_to_target.
+
+  - gate_id: G13
+    gate_name: Report Builder Gate
+    phase: report_builder
+    required_files:
+      - src/report_builder.py
+      - tests/test_report_builder.py
+    pytest_targets:
+      - tests/test_report_builder.py
+    required_keywords:
+      - 목표 초과 예상
+      - target_status
+      - target_variance
+      - surplus_to_target
+      - OVER_TARGET
+      - O1_TARGET_HOLD_BUFFER
+      - O2_STRETCH_TARGET_CAPTURE
+      - O3_QUALITY_GUARD_RELIEF
+      - O1
+      - O2
+      - O3
+      - 취소
+      - 철회
+      - 미결제
+    required_test_patterns:
+      - file: tests/test_report_builder.py
+        label: OVER_TARGET report test exists
+        any_of:
+          - test_report_includes_overachievement_strategy_language
+      - file: tests/test_report_builder.py
+        label: OVER_TARGET fixture uses target status
+        any_of:
+          - '"target_status": "OVER_TARGET"'
+          - "'target_status': 'OVER_TARGET'"
+      - file: tests/test_report_builder.py
+        label: 목표 초과 예상 phrase assertion
+        any_of:
+          - 'assert "목표 초과 예상" in report'
+      - file: tests/test_report_builder.py
+        label: OVER_TARGET report is not reduced to NO_GAP
+        any_of:
+          - 'assert "NO_GAP" not in report'
+      - file: tests/test_report_builder.py
+        label: O1 report wording assertion
+        any_of:
+          - 'assert "O1 목표 유지 안전버퍼" in report'
+      - file: tests/test_report_builder.py
+        label: O2 report wording assertion
+        any_of:
+          - 'assert "O2 상향 목표 전환" in report'
+      - file: tests/test_report_builder.py
+        label: O3 report wording assertion
+        any_of:
+          - 'assert "O3 계약 품질 방어" in report'
+      - file: tests/test_report_builder.py
+        label: cancellation and payment risk wording assertions
+        any_of:
+          - 'assert "취소" in report'
+          - 'assert "철회" in report'
+          - 'assert "미결제" in report'
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    pass_conditions:
+      - Report Builder includes the phrase 목표 초과 예상.
+      - Report output includes surplus_to_target context.
+      - O1, O2, and O3 overachievement strategies are reported.
+
+  - gate_id: G15
+    gate_name: Streamlit App Gate
+    phase: streamlit_app
+    required_files:
+      - app.py
+      - tests/test_app_smoke.py
+    pytest_targets:
+      - tests/test_app_smoke.py
+    keyword_scan_files:
+      - app.py
+      - tests/test_app_smoke.py
+      - src/report_builder.py
+      - tests/test_report_builder.py
+    required_keywords:
+      - target_status
+      - target_variance
+      - surplus_to_target
+      - OVER_TARGET
+      - O1_TARGET_HOLD_BUFFER
+      - O2_STRETCH_TARGET_CAPTURE
+      - O3_QUALITY_GUARD_RELIEF
+      - 목표 초과 예상
+    required_test_patterns:
+      - file: tests/test_app_smoke.py
+        label: app import smoke test exists
+        any_of:
+          - "from app import ("
+      - file: app.py
+        label: target_status KPI display code exists
+        any_of:
+          - 'selected_row.get("target_status"'
+      - file: app.py
+        label: surplus_to_target KPI display code exists
+        any_of:
+          - 'selected_row.get("surplus_to_target"'
+      - file: app.py
+        label: target_variance KPI display code exists
+        any_of:
+          - 'selected_row.get("target_variance"'
+      - file: app.py
+        label: O1/O2/O3 explanation display code exists
+        any_of:
+          - "def build_overachievement_definition_df"
+      - file: tests/test_app_smoke.py
+        label: O1/O2/O3 explanation test exists
+        any_of:
+          - 'overachievement_definitions["strategy"].tolist() == ["O1", "O2", "O3"]'
+      - file: app.py
+        label: validation error calculation guard exists
+        any_of:
+          - 'return {"validation": validation_result}'
+      - file: tests/test_app_smoke.py
+        label: validation error stops scenario calculation test exists
+        any_of:
+          - 'assert "scenario_df" not in results'
+      - file: app.py
+        label: report builder output is rendered by Streamlit
+        any_of:
+          - "build_daily_report_text("
+      - file: src/report_builder.py
+        label: 목표 초과 예상 report phrase source exists
+        any_of:
+          - "목표 초과 예상"
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    static_warnings:
+      - "G15는 정적 Streamlit 자동감리이므로 실제 브라우저 화면 캡처는 별도 제출이 필요합니다."
+    pass_conditions:
+      - Streamlit screen displays target_status, target_variance, and surplus_to_target.
+      - Streamlit screen exposes OVER_TARGET handling and O1/O2/O3 strategies.
+      - Streamlit report area includes the 목표 초과 예상 report phrase through Report Builder output.
+      - Validation errors stop calculation before scenario outputs are created.
+      - Streamlit input handling does not infer close days from display labels.
+
+  - gate_id: G18
+    gate_name: Final Audit Gate
+    phase: final_audit
+    required_files:
+      - src/forecast_models.py
+      - src/provision_models.py
+      - src/overachievement_models.py
+      - src/scenario_runner.py
+      - src/report_builder.py
+      - app.py
+      - tests/test_forecast_models.py
+      - tests/test_provision_models.py
+      - tests/test_overachievement_models.py
+      - tests/test_scenario_runner.py
+      - tests/test_report_builder.py
+      - tests/test_app_smoke.py
+    pytest_targets:
+      - tests
+    required_gates:
+      - G09
+      - G10
+      - G12
+      - G13
+      - G15
+    required_keywords:
+      - target_status
+      - surplus_to_target
+      - target_variance
+      - O1_TARGET_HOLD_BUFFER
+      - O2_STRETCH_TARGET_CAPTURE
+      - O3_QUALITY_GUARD_RELIEF
+      - OVERACHIEVEMENT
+      - 목표 초과 예상
+    required_test_patterns:
+      - file: tests/test_forecast_models.py
+        label: target_variance assertion exists
+        any_of:
+          - 'result["target_variance"] == pytest.approx'
+          - "result['target_variance'] == pytest.approx"
+      - file: tests/test_scenario_runner.py
+        label: UNDER_TARGET branch is covered
+        any_of:
+          - 'set(result["target_status"]) == {UNDER_TARGET}'
+          - "set(result['target_status']) == {UNDER_TARGET}"
+      - file: src/scenario_runner.py
+        label: ON_TARGET branch exists
+        any_of:
+          - "if target_status == ON_TARGET:"
+      - file: tests/test_scenario_runner.py
+        label: OVER_TARGET branch is covered
+        any_of:
+          - 'set(result["target_status"]) == {OVER_TARGET}'
+          - "set(result['target_status']) == {OVER_TARGET}"
+      - file: tests/test_scenario_runner.py
+        label: OVER_TARGET is not reduced to NO_GAP
+        any_of:
+          - '"NO_GAP" not in set(result["status"])'
+          - "'NO_GAP' not in set(result['status'])"
+      - file: tests/test_report_builder.py
+        label: 목표 초과 예상 phrase assertion
+        any_of:
+          - 'assert "목표 초과 예상" in report'
+      - file: app.py
+        label: target_status KPI display code exists
+        any_of:
+          - 'selected_row.get("target_status"'
+      - file: app.py
+        label: surplus_to_target KPI display code exists
+        any_of:
+          - 'selected_row.get("surplus_to_target"'
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+      - "date_range("
+      - "bdate_range("
+      - "period_range("
+      - "input_path.write"
+      - "input_path.unlink"
+      - "input_path.rename"
+      - "input_path.replace"
+      - "to_csv(input_path"
+      - "to_excel(input_path"
+      - "shutil.move("
+      - "os.replace("
+    warning_keywords: []
+    pass_conditions:
+      - Final audit confirms target status and surplus fields across outputs.
+      - Final audit confirms target_variance is present.
+      - Final audit confirms overachievement strategy identifiers are present.
+      - Final audit confirms G09, G10, G12, G13, and G15 pass.
+      - Final audit confirms OVER_TARGET handling is not reduced to NO_GAP.
+      - Final audit confirms no suspicious code creates dates outside the input table.
+      - Final audit confirms no suspicious code mutates original input files.
+      - Final audit confirms no weekday-based close-day inference is present.
+
+  - gate_id: ALL
+    gate_name: All Gates
+    phase: all
+    required_files:
+      - config/gate_audit_catalog.yaml
+      - src/forecast_models.py
+      - src/provision_models.py
+      - src/overachievement_models.py
+      - src/scenario_runner.py
+      - src/report_builder.py
+      - app.py
+      - tests/test_gate_audit_catalog.py
+      - tests/test_forecast_models.py
+      - tests/test_provision_models.py
+      - tests/test_overachievement_models.py
+      - tests/test_scenario_runner.py
+      - tests/test_report_builder.py
+      - tests/test_app_smoke.py
+    pytest_targets:
+      - tests
+    required_keywords:
+      - target_status
+      - target_variance
+      - surplus_to_target
+      - UNDER_TARGET
+      - ON_TARGET
+      - OVER_TARGET
+      - O1_TARGET_HOLD_BUFFER
+      - O2_STRETCH_TARGET_CAPTURE
+      - O3_QUALITY_GUARD_RELIEF
+      - stretch_uplift
+      - remaining_surplus_buffer
+      - relief_amount
+      - strategy_type
+      - OVERACHIEVEMENT
+      - PROVISION
+      - NEUTRAL
+      - 목표 초과 예상
+      - O1
+      - O2
+      - O3
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    pass_conditions:
+      - All individual Gate definitions are available to Gate Runner.
+      - All required audit keywords are declared.
+      - All common forbidden close-day inference patterns are declared.

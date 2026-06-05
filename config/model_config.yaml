@@ -1,0 +1,10 @@
+amount_unit: "억"
+amount_decimal_places: 1
+rate_decimal_places: 1
+allow_negative_daily_actual: true
+close_day_cap_rate: 1.30
+non_close_day_cap_rate: 1.50
+provision_overflow_fallback: "ALL_REMAINING"
+fallback_forecast_model: "F1"
+monthly_target_source: "sum_daily_target"
+not_applicable_strategy_behavior: "RETURN_STATUS"
