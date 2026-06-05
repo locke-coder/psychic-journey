@@ -62,6 +62,7 @@ from src.validator import validate_input
 
 REPO_ROOT = Path(__file__).resolve().parent
 SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "input_sample.csv"
+HISTORICAL_SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "historical_input_sample.csv"
 OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
 ACCESS_SESSION_STATE_KEY = "limited_distribution_access_granted"
@@ -710,6 +711,7 @@ def main() -> None:
     df, source_label = _render_file_upload()
     if df is None:
         st.stop()
+    historical_df, historical_source_label = _render_historical_upload()
 
     st.caption(f"입력 소스: {source_label}")
     df = _render_input_editor(df, source_label)
@@ -745,6 +747,14 @@ def main() -> None:
         config,
     )
     revised_targets_df = provision_result.get("allocation_by_day", pd.DataFrame())
+    historical_context = build_historical_context(
+        historical_df,
+        df,
+        as_of_date,
+        metric,
+        validation_result,
+        historical_source_label,
+    )
 
     st.header("5. KPI")
     _render_kpis(
@@ -765,6 +775,7 @@ def main() -> None:
         close_cycle_df,
         next_close_result,
         validation_result,
+        historical_context,
     )
 
     st.header("7. 다운로드")
@@ -1992,6 +2003,473 @@ def safe_divide(numerator: object, denominator: object) -> float:
     return numerator_value / denominator_value
 
 
+def build_historical_monthly_summary(
+    historical_df: pd.DataFrame,
+    metric: str,
+) -> pd.DataFrame:
+    """Return month-level final target and achievement summaries."""
+    prepared = _prepare_historical_metric_frame(historical_df, metric)
+    if prepared.empty:
+        return pd.DataFrame(
+            columns=[
+                "month",
+                "row_count",
+                "completed_actual_days",
+                "final_business_day_no",
+                "monthly_target",
+                "final_actual_cum",
+                "final_achievement_rate",
+                "close_day_count",
+            ]
+        )
+
+    rows: list[dict[str, object]] = []
+    for month, month_df in prepared.groupby("_month", sort=True):
+        completed = month_df.dropna(subset=["_actual_cum"])
+        final_business_day_no = (
+            completed["_business_day_no"].max()
+            if not completed.empty
+            else month_df["_business_day_no"].max()
+        )
+        final_actual_cum = (
+            completed.sort_values(["_business_day_no", "_date"])["_actual_cum"].iloc[-1]
+            if not completed.empty
+            else float("nan")
+        )
+        monthly_target = month_df["_target_daily"].sum()
+        rows.append(
+            {
+                "month": str(month),
+                "row_count": int(len(month_df)),
+                "completed_actual_days": int(len(completed)),
+                "final_business_day_no": int(final_business_day_no),
+                "monthly_target": float(monthly_target),
+                "final_actual_cum": float(final_actual_cum),
+                "final_achievement_rate": safe_divide(final_actual_cum, monthly_target),
+                "close_day_count": int(month_df["_is_close_day"].sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_historical_stage_benchmark(
+    historical_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    validation_result: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    """Compare the current month with historical months at the same business-day stage."""
+    stage_df = build_historical_stage_comparison(
+        historical_df,
+        current_df,
+        as_of_date,
+        metric,
+    )
+    current_business_day_no = _current_business_day_no(current_df, as_of_date)
+    current_monthly_target = _historical_context_value(
+        validation_result,
+        "monthly_target",
+        _current_monthly_target(current_df, metric),
+    )
+    current_target_cum = _historical_context_value(
+        validation_result,
+        "current_target_cum",
+        _current_target_cum(current_df, as_of_date, metric),
+    )
+    current_actual_cum = _historical_context_value(
+        validation_result,
+        "current_actual_cum",
+        _current_actual_cum(current_df, as_of_date, metric),
+    )
+    current_rate = safe_divide(current_actual_cum, current_target_cum)
+
+    result: dict[str, object] = {
+        "month_count": int(len(stage_df)),
+        "current_business_day_no": current_business_day_no,
+        "current_monthly_target": current_monthly_target,
+        "current_target_cum": current_target_cum,
+        "current_actual_cum": current_actual_cum,
+        "current_achievement_rate": current_rate,
+        "historical_stage_median_rate": float("nan"),
+        "historical_stage_p25_rate": float("nan"),
+        "historical_stage_p75_rate": float("nan"),
+        "historical_final_median_rate": float("nan"),
+        "historical_forecast_lower": float("nan"),
+        "historical_forecast_median": float("nan"),
+        "historical_forecast_upper": float("nan"),
+        "current_stage_percentile": float("nan"),
+        "stage_df": stage_df,
+    }
+    if stage_df.empty:
+        return result
+
+    stage_rates = pd.to_numeric(
+        stage_df["as_of_achievement_rate"],
+        errors="coerce",
+    ).dropna()
+    final_rates = pd.to_numeric(
+        stage_df["final_achievement_rate"],
+        errors="coerce",
+    ).dropna()
+    if not stage_rates.empty:
+        result["historical_stage_median_rate"] = float(stage_rates.median())
+        result["historical_stage_p25_rate"] = float(stage_rates.quantile(0.25))
+        result["historical_stage_p75_rate"] = float(stage_rates.quantile(0.75))
+        if math.isfinite(current_rate):
+            result["current_stage_percentile"] = float((stage_rates <= current_rate).mean())
+    if not final_rates.empty:
+        result["historical_final_median_rate"] = float(final_rates.median())
+
+    multiplier_source = stage_df.copy()
+    multiplier_source["stage_to_final_multiplier"] = [
+        safe_divide(final_rate, stage_rate)
+        for final_rate, stage_rate in zip(
+            multiplier_source["final_achievement_rate"],
+            multiplier_source["as_of_achievement_rate"],
+        )
+    ]
+    multipliers = pd.to_numeric(
+        multiplier_source["stage_to_final_multiplier"],
+        errors="coerce",
+    ).dropna()
+    multipliers = multipliers.loc[multipliers.map(math.isfinite)]
+    multipliers = multipliers.loc[multipliers > 0]
+    if not multipliers.empty and math.isfinite(current_rate):
+        result["historical_forecast_lower"] = float(
+            current_monthly_target * current_rate * multipliers.quantile(0.25)
+        )
+        result["historical_forecast_median"] = float(
+            current_monthly_target * current_rate * multipliers.median()
+        )
+        result["historical_forecast_upper"] = float(
+            current_monthly_target * current_rate * multipliers.quantile(0.75)
+        )
+    return result
+
+
+def build_historical_stage_comparison(
+    historical_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+) -> pd.DataFrame:
+    """Return historical month rows matched to the current business-day stage."""
+    prepared = _prepare_historical_metric_frame(historical_df, metric)
+    if prepared.empty:
+        return pd.DataFrame()
+
+    current_business_day_no = _current_business_day_no(current_df, as_of_date)
+    if not math.isfinite(current_business_day_no):
+        return pd.DataFrame()
+
+    monthly_summary = build_historical_monthly_summary(historical_df, metric)
+    monthly_summary = monthly_summary.set_index("month", drop=False)
+    rows: list[dict[str, object]] = []
+    for month, month_df in prepared.groupby("_month", sort=True):
+        candidates = month_df.loc[
+            (month_df["_business_day_no"] <= current_business_day_no)
+            & month_df["_actual_cum"].notna()
+            & (month_df["_target_cum"] > 0)
+        ]
+        if candidates.empty or str(month) not in monthly_summary.index:
+            continue
+
+        stage_row = candidates.sort_values(["_business_day_no", "_date"]).iloc[-1]
+        final_row = monthly_summary.loc[str(month)]
+        rows.append(
+            {
+                "month": str(month),
+                "matched_business_day_no": int(stage_row["_business_day_no"]),
+                "as_of_target_cum": float(stage_row["_target_cum"]),
+                "as_of_actual_cum": float(stage_row["_actual_cum"]),
+                "as_of_achievement_rate": safe_divide(
+                    stage_row["_actual_cum"],
+                    stage_row["_target_cum"],
+                ),
+                "monthly_target": float(final_row["monthly_target"]),
+                "final_actual_cum": float(final_row["final_actual_cum"]),
+                "final_achievement_rate": float(final_row["final_achievement_rate"]),
+                "remaining_actual_growth": float(
+                    final_row["final_actual_cum"] - stage_row["_actual_cum"]
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_historical_progress_profile(
+    historical_df: pd.DataFrame,
+    metric: str,
+) -> pd.DataFrame:
+    """Return historical cumulative achievement bands by business day."""
+    prepared = _prepare_historical_metric_frame(historical_df, metric)
+    if prepared.empty:
+        return pd.DataFrame()
+
+    valid = prepared.dropna(subset=["_achievement_rate"])
+    if valid.empty:
+        return pd.DataFrame()
+
+    grouped = valid.groupby("_business_day_no")["_achievement_rate"]
+    profile = pd.DataFrame(
+        {
+            "business_day_no": grouped.median().index.astype(int),
+            "historical_p25_rate": grouped.quantile(0.25).to_numpy(),
+            "historical_median_rate": grouped.median().to_numpy(),
+            "historical_p75_rate": grouped.quantile(0.75).to_numpy(),
+            "month_count": grouped.count().to_numpy(),
+        }
+    )
+    return profile.reset_index(drop=True)
+
+
+def build_historical_progress_chart_data(
+    historical_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+) -> pd.DataFrame:
+    """Return long-form current and historical progress data for charting."""
+    profile = build_historical_progress_profile(historical_df, metric)
+    current_progress = _build_current_progress_series(current_df, as_of_date, metric)
+    rows: list[dict[str, object]] = []
+
+    for _, row in profile.iterrows():
+        business_day_no = int(row["business_day_no"])
+        for column, label in (
+            ("historical_p25_rate", "과거 하위 25%"),
+            ("historical_median_rate", "과거 중앙값"),
+            ("historical_p75_rate", "과거 상위 25%"),
+        ):
+            rows.append(
+                {
+                    "business_day_no": business_day_no,
+                    "series": label,
+                    "achievement_rate": float(row[column]),
+                }
+            )
+
+    for _, row in current_progress.iterrows():
+        rows.append(
+            {
+                "business_day_no": int(row["business_day_no"]),
+                "series": "현재 월",
+                "achievement_rate": float(row["achievement_rate"]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_historical_context(
+    historical_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    validation_result: dict[str, Any],
+    source_label: str = "",
+) -> dict[str, object]:
+    """Return all historical analysis artifacts used by the UI."""
+    history = _as_dataframe(historical_df)
+    if history.empty:
+        return {"has_data": False, "source_label": source_label}
+
+    monthly_summary = build_historical_monthly_summary(history, metric)
+    benchmark = build_historical_stage_benchmark(
+        history,
+        current_df,
+        as_of_date,
+        metric,
+        validation_result,
+    )
+    chart_data = build_historical_progress_chart_data(
+        history,
+        current_df,
+        as_of_date,
+        metric,
+    )
+    return {
+        "has_data": True,
+        "source_label": source_label,
+        "row_count": int(len(history)),
+        "monthly_summary": monthly_summary,
+        "benchmark": benchmark,
+        "progress_chart_data": chart_data,
+        "interpretation": build_historical_interpretation(benchmark),
+    }
+
+
+def build_historical_interpretation(benchmark: dict[str, object]) -> list[str]:
+    """Return business-readable interpretation sentences for historical context."""
+    month_count = int(benchmark.get("month_count") or 0)
+    if month_count == 0:
+        return [
+            "현재 기준 영업일차와 비교할 수 있는 과거 월 데이터가 아직 부족합니다.",
+            "과거 파일에는 같은 영업일차까지 누적 실적이 입력된 완료 월을 포함해 주세요.",
+        ]
+
+    current_rate = _as_float(benchmark.get("current_achievement_rate"))
+    median_rate = _as_float(benchmark.get("historical_stage_median_rate"))
+    p25_rate = _as_float(benchmark.get("historical_stage_p25_rate"))
+    p75_rate = _as_float(benchmark.get("historical_stage_p75_rate"))
+    current_business_day_no = benchmark.get("current_business_day_no")
+
+    messages = [
+        f"현재 월은 {current_business_day_no}영업일차 기준으로 과거 {month_count}개 월과 비교합니다.",
+    ]
+    if math.isfinite(current_rate) and math.isfinite(median_rate):
+        diff = current_rate - median_rate
+        messages.append(
+            f"현재 누적 달성률은 {format_rate(current_rate)}이고, 같은 영업일차 과거 중앙값은 {format_rate(median_rate)}입니다."
+        )
+        if math.isfinite(p25_rate) and current_rate < p25_rate:
+            messages.append("현재 흐름은 과거 하위 25%보다 낮아 월말 리스크를 보수적으로 보는 편이 좋습니다.")
+        elif math.isfinite(p75_rate) and current_rate > p75_rate:
+            messages.append("현재 흐름은 과거 상위 25%보다 높아 초과분 관리와 품질 리스크를 함께 볼 구간입니다.")
+        else:
+            messages.append("현재 흐름은 과거 일반 범위 안에 있어 기존 예측모델과 함께 균형 있게 해석할 수 있습니다.")
+        if abs(diff) >= 0.01:
+            messages.append(f"과거 중앙값 대비 차이는 {diff * 100:+.1f}%p입니다.")
+
+    lower = _as_float(benchmark.get("historical_forecast_lower"))
+    median = _as_float(benchmark.get("historical_forecast_median"))
+    upper = _as_float(benchmark.get("historical_forecast_upper"))
+    if all(math.isfinite(value) for value in (lower, median, upper)):
+        messages.append(
+            "과거의 같은 시점 이후 월말 전환 흐름을 적용하면 "
+            f"{format_amount(lower)} ~ {format_amount(upper)} 범위, 중앙값 {format_amount(median)} 수준으로 읽을 수 있습니다."
+        )
+    return messages
+
+
+def _prepare_historical_metric_frame(
+    df: pd.DataFrame,
+    metric: str,
+) -> pd.DataFrame:
+    metric_columns = get_metric_columns(metric)
+    target_column = metric_columns["target_daily"]
+    actual_column = metric_columns["actual_cum"]
+    required_columns = {"date", "business_day_no", "is_close_day", target_column, actual_column}
+    if df.empty or not required_columns.issubset(df.columns):
+        return pd.DataFrame()
+
+    result = df.copy()
+    result["_date"] = pd.to_datetime(result["date"], errors="coerce")
+    result["_month"] = result["_date"].dt.to_period("M").astype(str)
+    result["_business_day_no"] = pd.to_numeric(
+        result["business_day_no"],
+        errors="coerce",
+    )
+    result["_target_daily"] = pd.to_numeric(result[target_column], errors="coerce")
+    result["_actual_cum"] = pd.to_numeric(result[actual_column], errors="coerce")
+    result["_is_close_day"] = result["is_close_day"].astype(bool)
+    result = result.dropna(subset=["_date", "_business_day_no", "_target_daily"])
+    if result.empty:
+        return pd.DataFrame()
+
+    result = result.sort_values(["_month", "_business_day_no", "_date"]).reset_index(drop=True)
+    result["_target_cum"] = result.groupby("_month")["_target_daily"].cumsum()
+    result["_achievement_rate"] = [
+        safe_divide(actual, target)
+        for actual, target in zip(result["_actual_cum"], result["_target_cum"])
+    ]
+    return result
+
+
+def _build_current_progress_series(
+    current_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+) -> pd.DataFrame:
+    prepared = _prepare_historical_metric_frame(current_df, metric)
+    if prepared.empty:
+        return pd.DataFrame(columns=["business_day_no", "achievement_rate"])
+
+    as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    current = prepared.loc[
+        (prepared["_date"].dt.normalize() <= as_of_timestamp)
+        & prepared["_actual_cum"].notna()
+        & prepared["_achievement_rate"].notna()
+    ].copy()
+    if current.empty:
+        return pd.DataFrame(columns=["business_day_no", "achievement_rate"])
+    return pd.DataFrame(
+        {
+            "business_day_no": current["_business_day_no"].astype(int),
+            "achievement_rate": current["_achievement_rate"].astype(float),
+        }
+    )
+
+
+def _current_business_day_no(df: pd.DataFrame, as_of_date: object) -> float:
+    if df.empty or "date" not in df.columns or "business_day_no" not in df.columns:
+        return float("nan")
+
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    rows = df.loc[dates == as_of_timestamp]
+    if rows.empty:
+        return float("nan")
+    return float(pd.to_numeric(rows.iloc[0]["business_day_no"], errors="coerce"))
+
+
+def _current_monthly_target(df: pd.DataFrame, metric: str) -> float:
+    metric_columns = get_metric_columns(metric)
+    target_column = metric_columns["target_daily"]
+    if df.empty or target_column not in df.columns:
+        return float("nan")
+    return float(pd.to_numeric(df[target_column], errors="coerce").sum())
+
+
+def _current_target_cum(
+    df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+) -> float:
+    metric_columns = get_metric_columns(metric)
+    target_column = metric_columns["target_daily"]
+    if df.empty or "date" not in df.columns or target_column not in df.columns:
+        return float("nan")
+
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    values = pd.to_numeric(df.loc[dates <= as_of_timestamp, target_column], errors="coerce")
+    if values.empty:
+        return float("nan")
+    return float(values.sum())
+
+
+def _current_actual_cum(
+    df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+) -> float:
+    metric_columns = get_metric_columns(metric)
+    actual_column = metric_columns["actual_cum"]
+    if df.empty or "date" not in df.columns or actual_column not in df.columns:
+        return float("nan")
+
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    rows = df.loc[dates == as_of_timestamp]
+    if rows.empty:
+        return float("nan")
+    return float(pd.to_numeric(pd.Series([rows.iloc[0][actual_column]]), errors="coerce").iloc[0])
+
+
+def _historical_context_value(
+    validation_result: dict[str, Any] | None,
+    key: str,
+    fallback: float,
+) -> float:
+    if validation_result is None:
+        return fallback
+    value = _as_float(validation_result.get(key))
+    if math.isfinite(value):
+        return value
+    return fallback
+
+
 def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     st.header("1. 파일 업로드")
     uploaded_file = st.file_uploader("입력 파일 업로드", type=["csv", "xlsx"])
@@ -2009,6 +2487,44 @@ def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
         st.error(f"입력 파일을 로딩할 수 없습니다: {exc}")
         return None, ""
+
+
+def _render_historical_upload() -> tuple[pd.DataFrame, str]:
+    st.header("1-1. 과거 월 누적 데이터")
+    with st.expander("과거 월 데이터 업로드(선택)", expanded=False):
+        st.caption(
+            "현재 입력 파일과 같은 컬럼 구조의 CSV/XLSX를 여러 월 누적 형태로 업로드합니다. "
+            "앱은 업로드 파일을 화면 계산에만 사용하고 별도 파일로 저장하지 않습니다."
+        )
+        uploaded_file = st.file_uploader(
+            "과거 월 누적 파일 업로드",
+            type=["csv", "xlsx"],
+            key="historical_month_upload",
+        )
+        sample_col, clear_col = st.columns(2)
+        if sample_col.button("과거 샘플 데이터 로딩", key="load_historical_sample"):
+            st.session_state["use_historical_sample_input"] = True
+        if clear_col.button("과거 데이터 비우기", key="clear_historical_sample"):
+            st.session_state["use_historical_sample_input"] = False
+            return pd.DataFrame(), ""
+
+        try:
+            if uploaded_file is not None:
+                st.session_state["use_historical_sample_input"] = False
+                historical_df = _load_uploaded_input(uploaded_file, sort_by="date")
+                st.success(f"과거 월 데이터 {len(historical_df)}행을 불러왔습니다.")
+                return historical_df, uploaded_file.name
+
+            if st.session_state.get("use_historical_sample_input", False):
+                historical_df = load_input(HISTORICAL_SAMPLE_INPUT_PATH, sort_by="date")
+                st.success(f"과거 샘플 데이터 {len(historical_df)}행을 불러왔습니다.")
+                return historical_df, "과거 샘플 데이터"
+        except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
+            st.error(f"과거 월 데이터를 로딩할 수 없습니다: {exc}")
+            return pd.DataFrame(), ""
+
+        st.info("과거 월 데이터를 업로드하면 현재 월을 같은 영업일차의 과거 흐름과 비교합니다.")
+    return pd.DataFrame(), ""
 
 
 def _render_input_editor(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
@@ -2249,6 +2765,7 @@ def _render_body(
     close_cycle_df: pd.DataFrame,
     next_close_result: dict[str, Any],
     validation_result: dict[str, Any],
+    historical_context: dict[str, object],
 ) -> None:
     _render_visuals(
         scenario_df,
@@ -2256,6 +2773,7 @@ def _render_body(
         _as_dataframe(revised_targets_df),
         close_cycle_df,
     )
+    _render_historical_context_panel(historical_context)
 
     st.subheader("시나리오 매트릭스")
     st.dataframe(build_scenario_matrix(scenario_df), use_container_width=True)
@@ -2416,6 +2934,175 @@ def _render_visuals(
             _render_grouped_bar_chart(close_cycle_chart_data, close_cycle_bar_columns)
             _render_chart_reading_guide("close_cycle_rate")
             _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
+
+
+def _render_historical_context_panel(historical_context: dict[str, object]) -> None:
+    if not historical_context.get("has_data"):
+        return
+
+    benchmark = dict(historical_context.get("benchmark") or {})
+    source_label = str(historical_context.get("source_label") or "과거 월 데이터")
+    row_count = int(historical_context.get("row_count") or 0)
+    month_count = int(benchmark.get("month_count") or 0)
+
+    st.subheader("과거 월 누적 기준 해석")
+    st.caption(
+        f"과거 데이터: {source_label} | {row_count}행 | 같은 영업일차 비교 가능 월 {month_count}개"
+    )
+
+    lower = benchmark.get("historical_forecast_lower")
+    median = benchmark.get("historical_forecast_median")
+    upper = benchmark.get("historical_forecast_upper")
+    forecast_range = (
+        f"{format_amount(lower)} ~ {format_amount(upper)}"
+        if math.isfinite(_as_float(lower)) and math.isfinite(_as_float(upper))
+        else "계산 불가"
+    )
+
+    cols = st.columns(4)
+    cols[0].metric("현재 누적 달성률", format_rate(benchmark.get("current_achievement_rate")))
+    cols[1].metric("과거 중앙값", format_rate(benchmark.get("historical_stage_median_rate")))
+    cols[2].metric("과거 보정 예상 범위", forecast_range)
+    cols[3].metric("과거 보정 중앙값", format_amount(median))
+
+    for message in historical_context.get("interpretation", []):
+        st.write(f"- {message}")
+
+    progress_chart_data = _as_dataframe(historical_context.get("progress_chart_data"))
+    _render_historical_progress_chart(progress_chart_data)
+
+    stage_df = _as_dataframe(benchmark.get("stage_df"))
+    if not stage_df.empty:
+        with st.expander("같은 영업일차 과거 월 비교표", expanded=False):
+            st.dataframe(
+                _format_historical_stage_df(stage_df),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+    monthly_summary = _as_dataframe(historical_context.get("monthly_summary"))
+    if not monthly_summary.empty:
+        with st.expander("과거 월별 최종 요약", expanded=False):
+            st.dataframe(
+                _format_historical_monthly_summary_df(monthly_summary),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+
+def _render_historical_progress_chart(chart_data: pd.DataFrame) -> None:
+    if chart_data.empty:
+        st.info("과거 누적 흐름 차트 데이터 없음")
+        return
+
+    chart = (
+        alt.Chart(chart_data)
+        .mark_line(point=True, strokeWidth=2.3)
+        .encode(
+            x=alt.X(
+                "business_day_no:O",
+                title="영업일차",
+                sort=None,
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y(
+                "achievement_rate:Q",
+                title="누적 달성률",
+                axis=alt.Axis(format=".0%"),
+                scale=alt.Scale(zero=False, nice=True),
+            ),
+            color=alt.Color(
+                "series:N",
+                title="범례",
+                scale=alt.Scale(
+                    domain=["현재 월", "과거 중앙값", "과거 하위 25%", "과거 상위 25%"],
+                    range=["#DC2626", "#2563EB", "#94A3B8", "#64748B"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("business_day_no:O", title="영업일차"),
+                alt.Tooltip("series:N", title="범례"),
+                alt.Tooltip("achievement_rate:Q", title="누적 달성률", format=".1%"),
+            ],
+        )
+        .properties(height=320)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _format_historical_stage_df(stage_df: pd.DataFrame) -> pd.DataFrame:
+    result = stage_df.copy()
+    columns = [
+        "month",
+        "matched_business_day_no",
+        "as_of_target_cum",
+        "as_of_actual_cum",
+        "as_of_achievement_rate",
+        "monthly_target",
+        "final_actual_cum",
+        "final_achievement_rate",
+        "remaining_actual_growth",
+    ]
+    result = result.loc[:, [column for column in columns if column in result.columns]]
+    for column in (
+        "as_of_target_cum",
+        "as_of_actual_cum",
+        "monthly_target",
+        "final_actual_cum",
+        "remaining_actual_growth",
+    ):
+        if column in result.columns:
+            result[column] = result[column].map(format_amount)
+    for column in ("as_of_achievement_rate", "final_achievement_rate"):
+        if column in result.columns:
+            result[column] = result[column].map(format_rate)
+    return result.rename(
+        columns={
+            "month": "월",
+            "matched_business_day_no": "비교 영업일차",
+            "as_of_target_cum": "당시 누적 목표",
+            "as_of_actual_cum": "당시 누적 실적",
+            "as_of_achievement_rate": "당시 누적 달성률",
+            "monthly_target": "월 목표",
+            "final_actual_cum": "최종 누적 실적",
+            "final_achievement_rate": "최종 달성률",
+            "remaining_actual_growth": "비교일 이후 증가 실적",
+        }
+    )
+
+
+def _format_historical_monthly_summary_df(monthly_summary: pd.DataFrame) -> pd.DataFrame:
+    result = monthly_summary.copy()
+    columns = [
+        "month",
+        "row_count",
+        "completed_actual_days",
+        "final_business_day_no",
+        "monthly_target",
+        "final_actual_cum",
+        "final_achievement_rate",
+        "close_day_count",
+    ]
+    result = result.loc[:, [column for column in columns if column in result.columns]]
+    for column in ("monthly_target", "final_actual_cum"):
+        if column in result.columns:
+            result[column] = result[column].map(format_amount)
+    if "final_achievement_rate" in result.columns:
+        result["final_achievement_rate"] = result["final_achievement_rate"].map(format_rate)
+    return result.rename(
+        columns={
+            "month": "월",
+            "row_count": "행 수",
+            "completed_actual_days": "실적 입력일 수",
+            "final_business_day_no": "최종 영업일차",
+            "monthly_target": "월 목표",
+            "final_actual_cum": "최종 누적 실적",
+            "final_achievement_rate": "최종 달성률",
+            "close_day_count": "마감일 수",
+        }
+    )
 
 
 def _render_strategy_level_visuals(
@@ -2614,7 +3301,10 @@ def _render_visual_metric_definitions(metric_columns: tuple[str, ...]) -> None:
             st.markdown(f"- **{row['범례']} ({row['단위']})**: {row['수치 의미']}")
 
 
-def _load_uploaded_input(uploaded_file: Any) -> pd.DataFrame:
+def _load_uploaded_input(
+    uploaded_file: Any,
+    sort_by: str = "business_day_no",
+) -> pd.DataFrame:
     suffix = Path(uploaded_file.name).suffix.lower()
     if suffix not in {".csv", ".xlsx"}:
         raise ValueError("Unsupported input file type. Use CSV or XLSX.")
@@ -2622,7 +3312,9 @@ def _load_uploaded_input(uploaded_file: Any) -> pd.DataFrame:
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_path = Path(tmp_dir) / f"uploaded{suffix}"
         temp_path.write_bytes(uploaded_file.getvalue())
-        return load_input(temp_path)
+        if sort_by not in {"business_day_no", "date"}:
+            raise ValueError("sort_by must be either 'business_day_no' or 'date'.")
+        return load_input(temp_path, sort_by=sort_by)
 
 
 def _filter_scenarios(
