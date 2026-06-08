@@ -2818,6 +2818,27 @@ def _render_kpis(
     next_close_result: dict[str, Any],
     selected_row: pd.Series,
 ) -> None:
+    for row in build_kpi_rows(
+        validation_result,
+        scenario_df,
+        next_close_result,
+        selected_row,
+    ):
+        cols = st.columns(len(row))
+        for col, (label, value) in zip(cols, row):
+            help_text = KPI_HELP_TEXTS.get(label)
+            if help_text:
+                col.metric(label, value, help=help_text)
+            else:
+                col.metric(label, value)
+
+
+def build_kpi_rows(
+    validation_result: dict[str, Any],
+    scenario_df: pd.DataFrame,
+    next_close_result: dict[str, Any],
+    selected_row: pd.Series,
+) -> tuple[tuple[tuple[str, object], ...], ...]:
     achievement_rate = safe_divide(
         validation_result.get("current_actual_cum"),
         validation_result.get("current_target_cum"),
@@ -2827,31 +2848,30 @@ def _render_kpis(
     next_close_required = next_close_result.get("required_to_recover_next_close_cum")
     target_status = selected_row.get("target_status", "계산 불가")
 
-    kpis = [
-        ("월 목표", format_amount(validation_result.get("monthly_target"))),
-        ("기준일 누적 목표", format_amount(validation_result.get("current_target_cum"))),
-        ("기준일 누적 실적", format_amount(validation_result.get("current_actual_cum"))),
-        ("누적 달성률", format_rate(achievement_rate)),
-        ("F1 예상", format_amount(forecast_summary.get("F1"))),
-        ("F2 예상", format_amount(forecast_summary.get("F2"))),
-        ("F3 예상", format_amount(forecast_summary.get("F3"))),
-        ("다음 마감일", _format_date(next_close_date)),
-        (NEXT_CLOSE_REQUIRED_LABEL, format_amount(next_close_required)),
-        ("위험등급", _localize_display_value(selected_row.get("risk_level", "계산 불가"))),
-        ("운영모드", _operation_mode_label(target_status)),
-        ("목표 상태", _localize_display_value(target_status)),
-        ("목표 대비 차이", format_amount(selected_row.get("target_variance"))),
-        ("초과 예상분", format_amount(selected_row.get("surplus_to_target"))),
-    ]
-
-    for row_start in range(0, len(kpis), 5):
-        cols = st.columns(5)
-        for col, (label, value) in zip(cols, kpis[row_start : row_start + 5]):
-            help_text = KPI_HELP_TEXTS.get(label)
-            if help_text:
-                col.metric(label, value, help=help_text)
-            else:
-                col.metric(label, value)
+    return (
+        (
+            ("월 목표", format_amount(validation_result.get("monthly_target"))),
+            ("기준일 누적 목표", format_amount(validation_result.get("current_target_cum"))),
+            ("기준일 누적 실적", format_amount(validation_result.get("current_actual_cum"))),
+            ("누적 달성률", format_rate(achievement_rate)),
+        ),
+        (
+            ("F1예상", format_amount(forecast_summary.get("F1"))),
+            ("F2예상", format_amount(forecast_summary.get("F2"))),
+            ("F3예상", format_amount(forecast_summary.get("F3"))),
+        ),
+        (
+            ("다음 마감일", _format_date(next_close_date)),
+            (NEXT_CLOSE_REQUIRED_LABEL, format_amount(next_close_required)),
+        ),
+        (
+            ("목표상태", _localize_display_value(target_status)),
+            ("목표대비 차이", format_amount(selected_row.get("target_variance"))),
+            ("초과 예상분", format_amount(selected_row.get("surplus_to_target"))),
+            ("위험등급", _localize_display_value(selected_row.get("risk_level", "계산 불가"))),
+            ("운영모드", _operation_mode_label(target_status)),
+        ),
+    )
 
 
 def _render_body(
