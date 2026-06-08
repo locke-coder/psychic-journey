@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import math
 import os
 import tempfile
@@ -12,6 +13,8 @@ from typing import Any
 
 import altair as alt
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 
 try:
     import streamlit as st
@@ -65,6 +68,19 @@ SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "input_sample.csv"
 HISTORICAL_SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "historical_input_sample.csv"
 OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
+INPUT_TEMPLATE_FILENAME = "month_close_forecast_input_template.xlsx"
+INPUT_TEMPLATE_HEADERS = (
+    "date",
+    "day_name",
+    "business_day_no",
+    "is_close_day",
+    "close_type",
+    "sales_target_daily",
+    "recognized_target_daily",
+    "sales_actual_cum",
+    "recognized_actual_cum",
+    "memo",
+)
 ACCESS_SESSION_STATE_KEY = "limited_distribution_access_granted"
 ACCESS_PASSWORD_SETTING_KEYS = (
     "APP_ACCESS_PASSWORD",
@@ -2470,8 +2486,56 @@ def _historical_context_value(
     return fallback
 
 
+def build_input_template_bytes() -> bytes:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "InputTemplate"
+    worksheet.append(list(INPUT_TEMPLATE_HEADERS))
+    worksheet.append(
+        [
+            "YYYY-MM-DD",
+            "display_only",
+            1,
+            False,
+            "",
+            None,
+            None,
+            None,
+            None,
+            "",
+        ]
+    )
+
+    header_fill = PatternFill(fill_type="solid", fgColor="44546A")
+    header_font = Font(bold=True, color="FFFFFF")
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = f"A1:J{worksheet.max_row}"
+    for cell in worksheet[1]:
+        cell_width = max(12, min(28, len(str(cell.value)) + 4))
+        worksheet.column_dimensions[cell.column_letter].width = cell_width
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
+
+
+def _render_input_template_download() -> None:
+    st.download_button(
+        "엑셀 업로드 양식 다운로드",
+        data=build_input_template_bytes(),
+        file_name=INPUT_TEMPLATE_FILENAME,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     st.header("1. 파일 업로드")
+    _render_input_template_download()
     uploaded_file = st.file_uploader("입력 파일 업로드", type=["csv", "xlsx"])
     uploaded_name = getattr(uploaded_file, "name", None)
     if uploaded_name != st.session_state.get("uploaded_file_name"):
