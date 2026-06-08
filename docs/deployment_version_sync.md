@@ -15,25 +15,28 @@
 
 - 확인일: 2026-06-08 KST
 - 확인 결과: `MATCH`
-- 원격 `main` 기준 앱 내용 커밋: `07571e4367d976b900602948e68e38d7908a24dc`
-- 로컬 배포 폴더 앱 내용 기준 커밋: `07571e4367d976b900602948e68e38d7908a24dc`
-- 앱 파일과 양식 파일 해시 기준: 원격 `main`과 로컬 배포 폴더 내용 일치 확인
+- 원격 `main` 기준 앱 내용 커밋: `6f8b8b3c2af0b4274c591b7fe9c0cf7bbb6966f2`
+- 로컬 배포 폴더 앱 내용 기준 커밋: `6f8b8b3c2af0b4274c591b7fe9c0cf7bbb6966f2`
+- 앱 파일, 정책 문서, 양식 파일 해시 기준: 원격 `main`과 로컬 배포 폴더 내용 일치 확인
 - 이 문서 자체를 기록/갱신하는 커밋 때문에 Git HEAD는 앱 내용 기준 커밋보다 앞설 수 있다.
 
 ## 배포 주요 파일 해시
 
 | 파일 | Git blob | SHA-256 prefix |
 | --- | --- | --- |
-| `app.py` | `36874cddfe56ac0e77eaaa45fe01d9478b19d52a` | `55E3EBEB6C2E5886` |
-| `data/sample/input_sample.csv` | `8d20123c4ad77e4a7d382c19e36cea5b34c029f3` | `5DA279DA2FBD` |
+| `app.py` | `3d1de768e4d488f6463737685fa2395f546b4905` | `EC9346A3942B923C` |
+| `README.md` | `1863b9d5ed18ae7661f1c62fe89cfac8700e2403` | `D01FEE85D846EE86` |
+| `docs/runbook.md` | `6ef2f81461ef46971d5763a27a52d792226623a6` | `EC33BB570894E35C` |
+| `data/sample/input_sample.csv` | `8d20123c4ad77e4a7d382c19e36cea5b34c029f3` | `5DA279DA2FBD5E1E` |
 | `data/sample/historical_input_sample.csv` | `74fe3923dd3088f82a12b9bdb1948dfc1ba75348` | `FF7F6201001840D1` |
-| `outputs/latest/month_close_forecast_input_template.xlsx` | `e0422bbcd9b62fd19ffe1cc009b94943a759b534` | `9F2DF6D25051` |
+| `outputs/latest/month_close_forecast_input_template.xlsx` | `e0422bbcd9b62fd19ffe1cc009b94943a759b534` | `9F2DF6D25051739` |
 | `outputs/latest/historical_month_close_forecast_input_template.xlsx` | `6dc4388791d4e483088ebf9adc1d8be3e409137a` | `DEC01CCF421BDDAC` |
 
 ## 현재 주의사항
 
 - 로컬 배포 폴더에는 미배포 변경 `src/excel_exporter.py`가 남아 있다. 이 파일은 현재 원격 `main`에 반영된 배포 버전으로 보지 않는다.
 - 원본 작업 폴더와 로컬 배포 폴더를 비교하면 `app.py`, `data/sample/historical_input_sample.csv`, `outputs/latest/historical_month_close_forecast_input_template.xlsx`에 차이가 있다.
+- 업로드 최신값 등록 정책은 원본 작업 폴더와 로컬 배포 폴더의 `README.md`, `docs/runbook.md`, `app.py`에 모두 반영했다. 단, `app.py` 전체 파일은 기존 분기 차이가 있어 해시 일치 기준으로 보지 않는다.
 - 위 차이는 이번 확인 기록에 남겨 둔다. 다음 배포 작업에서는 원본 작업 폴더와 로컬 배포 폴더 중 어느 쪽을 기준으로 삼을지 먼저 정하고, 의도한 파일만 동기화한 뒤 이 기록을 갱신한다.
 
 ## 배포 전 체크 순서
