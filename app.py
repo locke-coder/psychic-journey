@@ -70,6 +70,8 @@ OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
 INPUT_TEMPLATE_FILENAME = "month_close_forecast_input_template.xlsx"
 HISTORICAL_INPUT_TEMPLATE_FILENAME = "historical_month_close_forecast_input_template.xlsx"
+SAMPLE_INPUT_SOURCE_LABEL = "샘플 데이터"
+HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL = "과거 샘플 데이터"
 INPUT_TEMPLATE_HEADERS = (
     "date",
     "day_name",
@@ -2570,6 +2572,7 @@ def _render_historical_input_template_download() -> None:
 def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     st.header("1. 파일 업로드")
     _render_input_template_download()
+    st.caption("새로 업로드한 입력 파일의 누적 실적은 최신 기본값으로 등록됩니다.")
     uploaded_file = st.file_uploader("입력 파일 업로드", type=["csv", "xlsx"])
     uploaded_name = getattr(uploaded_file, "name", None)
     if uploaded_name != st.session_state.get("uploaded_file_name"):
@@ -2581,7 +2584,7 @@ def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     try:
         if uploaded_file is not None and not st.session_state.get("force_sample_input", False):
             return _load_uploaded_input(uploaded_file), uploaded_file.name
-        return load_input(SAMPLE_INPUT_PATH), "샘플 데이터"
+        return load_input(SAMPLE_INPUT_PATH), SAMPLE_INPUT_SOURCE_LABEL
     except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
         st.error(f"입력 파일을 로딩할 수 없습니다: {exc}")
         return None, ""
@@ -2592,7 +2595,7 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
     with st.expander("과거 월 데이터 업로드(선택)", expanded=False):
         st.caption(
             "현재 입력 파일과 같은 컬럼 구조의 CSV/XLSX를 여러 월 누적 형태로 업로드합니다. "
-            "앱은 업로드 파일을 화면 계산에만 사용하고 별도 파일로 저장하지 않습니다."
+            "과거 월 파일은 비교 계산에만 사용하고 최신 기본값 저장 대상에서는 제외합니다."
         )
         _render_historical_input_template_download()
         uploaded_file = st.file_uploader(
@@ -2617,7 +2620,7 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
             if st.session_state.get("use_historical_sample_input", False):
                 historical_df = load_input(HISTORICAL_SAMPLE_INPUT_PATH, sort_by="date")
                 st.success(f"과거 샘플 데이터 {len(historical_df)}행을 불러왔습니다.")
-                return historical_df, "과거 샘플 데이터"
+                return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
         except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
             st.error(f"과거 월 데이터를 로딩할 수 없습니다: {exc}")
             return pd.DataFrame(), ""
@@ -2629,8 +2632,10 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
 def _render_input_editor(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
     st.header("2. 입력 수정")
     saved_actuals = _load_saved_actuals_for_ui()
-    if not saved_actuals.empty:
-        df = apply_saved_actuals(df, saved_actuals)
+    df, default_source = apply_latest_upload_policy(df, source_label, saved_actuals)
+    if default_source == "uploaded":
+        st.caption("업로드 입력값을 최신 실적 기본값으로 등록했습니다.")
+    elif default_source == "saved":
         st.caption(f"저장된 실적 기본값 {len(saved_actuals)}건을 불러왔습니다.")
 
     editor_key = "direct_input_editor"
@@ -2661,6 +2666,28 @@ def _render_input_editor(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
     normalized = normalize_direct_input_edits(_as_dataframe(edited_df))
     save_actual_values(normalized)
     return normalized
+
+
+def apply_latest_upload_policy(
+    df: pd.DataFrame,
+    source_label: str,
+    saved_actuals: pd.DataFrame,
+    path: str | Path = SAVED_ACTUALS_PATH,
+) -> tuple[pd.DataFrame, str]:
+    """Apply the latest-value policy for uploaded current-month inputs."""
+    if _is_current_upload_source(source_label):
+        normalized = normalize_direct_input_edits(df)
+        save_actual_values(normalized, path)
+        return normalized, "uploaded"
+
+    if not saved_actuals.empty:
+        return apply_saved_actuals(df, saved_actuals), "saved"
+
+    return df.copy(), "none"
+
+
+def _is_current_upload_source(source_label: str) -> bool:
+    return bool(source_label) and source_label != SAMPLE_INPUT_SOURCE_LABEL
 
 
 def _load_saved_actuals_for_ui() -> pd.DataFrame:
