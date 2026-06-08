@@ -69,6 +69,7 @@ HISTORICAL_SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "historical_input
 OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
 INPUT_TEMPLATE_FILENAME = "month_close_forecast_input_template.xlsx"
+HISTORICAL_INPUT_TEMPLATE_FILENAME = "historical_month_close_forecast_input_template.xlsx"
 INPUT_TEMPLATE_HEADERS = (
     "date",
     "day_name",
@@ -80,6 +81,28 @@ INPUT_TEMPLATE_HEADERS = (
     "sales_actual_cum",
     "recognized_actual_cum",
     "memo",
+)
+INPUT_TEMPLATE_SAMPLE_ROWS = (
+    (
+        "YYYY-MM-DD",
+        "display_only",
+        1,
+        False,
+        "",
+        None,
+        None,
+        None,
+        None,
+        "",
+    ),
+)
+HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS = (
+    ("2026-03-02", "월", 1, True, "월초특수", 35.0, 32.0, 33.0, 30.0, "과거 월 예시"),
+    ("2026-03-03", "화", 2, False, "일반", 2.5, 2.3, 38.0, 34.5, "과거 월 예시"),
+    ("2026-03-05", "목", 3, True, "목마감", 14.0, 12.8, 51.0, 46.3, "과거 월 예시"),
+    ("2026-04-01", "수", 1, True, "월초특수", 34.0, 31.0, 31.0, 28.3, "다음 월은 1부터 다시 시작"),
+    ("2026-04-02", "목", 2, False, "일반", 2.6, 2.4, 35.0, 31.8, "다음 월은 1부터 다시 시작"),
+    ("2026-04-06", "월", 3, True, "월마감", 14.5, 13.3, 47.0, 42.7, "다음 월은 1부터 다시 시작"),
 )
 ACCESS_SESSION_STATE_KEY = "limited_distribution_access_granted"
 ACCESS_PASSWORD_SETTING_KEYS = (
@@ -2486,25 +2509,16 @@ def _historical_context_value(
     return fallback
 
 
-def build_input_template_bytes() -> bytes:
+def _build_template_workbook_bytes(
+    sheet_title: str,
+    sample_rows: tuple[tuple[object, ...], ...],
+) -> bytes:
     workbook = Workbook()
     worksheet = workbook.active
-    worksheet.title = "InputTemplate"
+    worksheet.title = sheet_title
     worksheet.append(list(INPUT_TEMPLATE_HEADERS))
-    worksheet.append(
-        [
-            "YYYY-MM-DD",
-            "display_only",
-            1,
-            False,
-            "",
-            None,
-            None,
-            None,
-            None,
-            "",
-        ]
-    )
+    for row in sample_rows:
+        worksheet.append(list(row))
 
     header_fill = PatternFill(fill_type="solid", fgColor="44546A")
     header_font = Font(bold=True, color="FFFFFF")
@@ -2524,11 +2538,31 @@ def build_input_template_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def build_input_template_bytes() -> bytes:
+    return _build_template_workbook_bytes("InputTemplate", INPUT_TEMPLATE_SAMPLE_ROWS)
+
+
+def build_historical_input_template_bytes() -> bytes:
+    return _build_template_workbook_bytes(
+        "HistoricalInputTemplate",
+        HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS,
+    )
+
+
 def _render_input_template_download() -> None:
     st.download_button(
         "엑셀 업로드 양식 다운로드",
         data=build_input_template_bytes(),
         file_name=INPUT_TEMPLATE_FILENAME,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _render_historical_input_template_download() -> None:
+    st.download_button(
+        "과거 월 누적 업로드 양식 다운로드",
+        data=build_historical_input_template_bytes(),
+        file_name=HISTORICAL_INPUT_TEMPLATE_FILENAME,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -2560,6 +2594,7 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
             "현재 입력 파일과 같은 컬럼 구조의 CSV/XLSX를 여러 월 누적 형태로 업로드합니다. "
             "앱은 업로드 파일을 화면 계산에만 사용하고 별도 파일로 저장하지 않습니다."
         )
+        _render_historical_input_template_download()
         uploaded_file = st.file_uploader(
             "과거 월 누적 파일 업로드",
             type=["csv", "xlsx"],
