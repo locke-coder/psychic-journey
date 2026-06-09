@@ -1,0 +1,52 @@
+storage_paths:
+  forecast_history: "outputs/history/forecast_history.csv"
+  final_actuals: "outputs/history/final_actuals.csv"
+
+schemas:
+  forecast_history:
+    required_columns:
+      - run_id
+      - run_datetime
+      - target_month
+      - as_of_date
+      - metric
+      - forecast_model
+      - strategy_id
+      - strategy_type
+      - forecast_amount
+      - forecast_rate
+      - target_status
+      - target_variance
+      - gap_to_target
+      - surplus_to_target
+      - risk_level
+      - monthly_target
+      - current_actual_cum
+      - current_target_cum
+      - remaining_target
+  final_actuals:
+    required_columns:
+      - target_month
+      - metric
+      - final_actual
+      - final_achievement_rate
+      - final_status
+      - cancellation_amount
+      - net_actual
+      - memo
+      - updated_at
+
+duplicate_keys:
+  forecast_history:
+    run_id_unique: true
+    fallback_key:
+      - target_month
+      - as_of_date
+      - metric
+      - forecast_model
+      - strategy_id
+      - run_datetime
+  final_actuals:
+    upsert_key:
+      - target_month
+      - metric
