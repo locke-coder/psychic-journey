@@ -7,3 +7,5 @@ outputs/streamlit_deploy_source.zip
 .venv/
 .env
 .streamlit/secrets.toml
+.streamlit/secrets.*.toml
+!.streamlit/secrets.example.toml

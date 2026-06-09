@@ -89,12 +89,14 @@ TERM_DEFINITION_GROUPS = (
     ("유지/모니터링 전략(N)", NEUTRAL_STRATEGY_DEFINITIONS),
     ("위험등급", RISK_LEVEL_DEFINITIONS),
 )
+MODEL_ERROR_SECTION_TITLE = "모델 오차율 요약"
 
 
 def build_daily_report_text(
     scenario_df: pd.DataFrame,
     next_close_result: Mapping[str, Any] | None,
     selected_scenario_id: str | None = None,
+    backtest_summary_df: pd.DataFrame | None = None,
 ) -> str:
     """Build a concise Korean daily report from scenario-grid output."""
     if scenario_df is None or scenario_df.empty:
@@ -131,7 +133,67 @@ def build_daily_report_text(
     if risk_sentences:
         sections.append(("위험등급 및 확인 사항", risk_sentences))
 
-    return _format_report_sections(sections)
+    report_text = _format_report_sections(sections)
+    return append_model_error_summary_to_report(report_text, backtest_summary_df)
+
+
+def append_model_error_summary_to_report(
+    report_text: str,
+    backtest_summary_df: pd.DataFrame | None,
+) -> str:
+    """Append a model-error summary section when Backtest data is available."""
+    summary_text = build_model_error_summary_text(backtest_summary_df)
+    if not summary_text:
+        return str(report_text)
+    base_text = str(report_text).strip()
+    section = f"[{MODEL_ERROR_SECTION_TITLE}]\n- {summary_text}"
+    if not base_text:
+        return section
+    return f"{base_text}\n\n{section}"
+
+
+def build_model_error_summary_text(backtest_summary_df: pd.DataFrame | None) -> str:
+    """Build a concise optional sentence from model-level Backtest errors."""
+    summary = _as_dataframe(backtest_summary_df)
+    if summary.empty or "forecast_model" not in summary.columns:
+        return ""
+
+    working = summary.copy()
+    if "error_rate" not in working.columns and "mean_error_rate" in working.columns:
+        working["error_rate"] = working["mean_error_rate"]
+    if "error_rate" not in working.columns:
+        return ""
+    if "bias" not in working.columns:
+        working["bias"] = float("nan")
+    if "sample_count" not in working.columns:
+        working["sample_count"] = 0
+
+    working["error_rate"] = pd.to_numeric(working["error_rate"], errors="coerce")
+    working["bias"] = pd.to_numeric(working["bias"], errors="coerce")
+    working["sample_count"] = pd.to_numeric(
+        working["sample_count"],
+        errors="coerce",
+    ).fillna(0)
+    working = working.loc[working["error_rate"].map(_is_finite)]
+    if working.empty:
+        return ""
+
+    ranked = working.sort_values(
+        ["error_rate", "forecast_model"],
+        ascending=[True, True],
+        kind="mergesort",
+    )
+    best = ranked.iloc[0]
+    parts = []
+    for _, row in ranked.head(3).iterrows():
+        parts.append(
+            f"{row.get('forecast_model')} 오차율 {_format_rate(row.get('error_rate'))}, "
+            f"bias {_format_amount(row.get('bias'))}, 표본 {int(row.get('sample_count') or 0)}건"
+        )
+    return (
+        f"Backtest 기준 최저 오차 모델은 {best.get('forecast_model')}이며, "
+        f"모델별 요약은 {'; '.join(parts)}입니다."
+    )
 
 
 def _format_report_sections(sections: list[tuple[str, list[str]]]) -> str:
@@ -531,6 +593,14 @@ def _as_float(value: object) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
+
+
+def _as_dataframe(value: pd.DataFrame | Any) -> pd.DataFrame:
+    if isinstance(value, pd.DataFrame):
+        return value.copy(deep=False)
+    if value is None:
+        return pd.DataFrame()
+    return pd.DataFrame(value)
 
 
 def _is_finite(value: object) -> bool:

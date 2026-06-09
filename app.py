@@ -350,6 +350,10 @@ STRATEGY_LEVEL_CHART_COLUMNS = (
 SCENARIO_DAILY_FORECAST_COLUMNS = (
     "date",
     "date_label",
+    "week_start",
+    "week_end",
+    "week_label",
+    "week_no",
     "business_day_no",
     "is_close_day",
     "day_type",
@@ -362,12 +366,42 @@ SCENARIO_DAILY_FORECAST_COLUMNS = (
     "target_cum",
     "monthly_target",
     "achievement_rate",
+    "target_achievement_rate",
     "achievement_label",
+    "target_achievement_label",
     "forecast_label",
     "target_cum_label",
     "risk_level_label",
     "is_selected",
     "is_as_of_date",
+)
+SCENARIO_DAILY_DETAIL_COLUMNS = (
+    "date",
+    "scenario_id",
+    "series_type",
+    "day_type",
+    "close_type",
+    "daily_expected",
+    "forecast_cum",
+    "target_cum",
+    "achievement_rate",
+    "target_achievement_rate",
+)
+REMAINING_OPERATION_DIRECTION_COLUMNS = (
+    "date",
+    "date_label",
+    "scenario_id",
+    "strategy_type",
+    "operation_mode",
+    "day_type",
+    "close_type",
+    "original_target",
+    "uplift",
+    "revised_target",
+    "expected_daily",
+    "expected_rate",
+    "direction",
+    "direction_detail",
 )
 VALIDATION_COLUMN_LABELS = {
     "date": "날짜",
@@ -631,19 +665,19 @@ VALIDATION_TERM_REPLACEMENTS = {
 }
 VISUAL_METRIC_DEFINITIONS = {
     "daily_forecast_cum": {
-        "label": "일자별 누적 예상",
+        "label": "주간 누적 예상",
         "unit": "억원",
-        "definition": "기준일까지는 확정 누적 실적, 기준일 이후는 각 시나리오의 일자별 예상 실적을 누적한 값입니다.",
+        "definition": "기준일까지는 확정 누적 실적, 기준일 이후는 각 시나리오의 예상 실적을 주간 말 기준으로 누적한 값입니다.",
     },
     "daily_target_cum": {
-        "label": "일자별 누적 목표선",
+        "label": "주간 누적 목표선",
         "unit": "억원",
-        "definition": "입력표의 일 목표를 날짜 순서대로 누적한 공식 계획선입니다.",
+        "definition": "입력표의 일 목표를 날짜 순서대로 누적한 뒤 주간 말 기준으로 표시한 공식 계획선입니다.",
     },
     "daily_achievement_rate": {
-        "label": "월 목표 달성률",
+        "label": "주간 월 목표 달성률",
         "unit": "%",
-        "definition": "각 날짜의 누적 실적 또는 누적 예상 실적을 공식 월 목표로 나눈 비율입니다.",
+        "definition": "각 주의 누적 실적 또는 누적 예상 실적을 공식 월 목표로 나눈 비율입니다.",
     },
     "forecast_amount": {
         "label": "월말 예상 실적(보정 전)",
@@ -753,13 +787,13 @@ VISUAL_METRIC_DEFINITIONS = {
 }
 VISUAL_READING_GUIDES = {
     "scenario_daily_progress": {
-        "title": "일자별 시나리오 누적 전망",
+        "title": "주간 목표 달성률 전망",
         "steps": (
-            "기준일까지는 확정 누적 실적선을 먼저 확인합니다.",
-            "기준일 이후 각 시나리오 선이 월 목표선에 얼마나 빨리 접근하는지 비교합니다.",
-            "마감일 음영 구간에서 선의 기울기가 크게 달라지면 해당 시나리오가 마감일 의존도가 높다는 뜻입니다.",
+            "100% 기준선을 중심으로 기준일까지의 확정 달성률과 이후 주간 시나리오 달성률을 비교합니다.",
+            "마우스 휠과 드래그로 특정 주간 구간을 확대/축소해 마감 전후 변화를 봅니다.",
+            "선 끝 라벨의 최종 달성률과 목표 대비 차이를 보고 우위 시나리오를 고릅니다.",
         ),
-        "decision": "같은 월말 목표 달성이라도 더 이른 날짜에 목표선에 가까워지는 조합이 운영상 여유가 큽니다.",
+        "decision": "100% 위로 안정적으로 올라서고, 같은 주차에서 더 높은 달성률을 보이는 조합이 시각적으로 우위입니다.",
     },
     "scenario_amount": {
         "title": "월말 예상 실적 비교",
@@ -1790,6 +1824,255 @@ def build_scenario_daily_forecast_source(
     return pd.DataFrame(rows, columns=SCENARIO_DAILY_FORECAST_COLUMNS)
 
 
+def build_scenario_weekly_forecast_source(daily_source: pd.DataFrame) -> pd.DataFrame:
+    """Return weekly endpoint rows from the daily cumulative scenario source."""
+    if daily_source.empty:
+        return pd.DataFrame(columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+
+    working = daily_source.copy()
+    working["date"] = pd.to_datetime(working["date"], errors="coerce")
+    working = working.dropna(subset=["date", "forecast_cum"])
+    if working.empty:
+        return pd.DataFrame(columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+
+    working = working.sort_values(["line_group", "date"], kind="mergesort")
+    group_columns = [
+        "line_group",
+        "scenario_id",
+        "series_type",
+        "week_start",
+        "week_end",
+        "week_label",
+        "week_no",
+    ]
+    weekly = (
+        working.groupby(group_columns, dropna=False, sort=False)
+        .tail(1)
+        .sort_values(["date", "line_group"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    return weekly.loc[:, list(SCENARIO_DAILY_FORECAST_COLUMNS)]
+
+
+def build_selected_scenario_daily_detail_source(
+    daily_source: pd.DataFrame,
+    selected_scenario_id: str | None,
+) -> pd.DataFrame:
+    """Return actual and selected scenario daily rows for the integrated detail table."""
+    if daily_source.empty:
+        return pd.DataFrame(columns=SCENARIO_DAILY_DETAIL_COLUMNS)
+
+    selected_id = str(selected_scenario_id or "")
+    source = daily_source.loc[
+        (daily_source["series_type"] == "확정 실적")
+        | (daily_source["scenario_id"].astype(str) == selected_id)
+    ].copy()
+    if source.empty:
+        return pd.DataFrame(columns=SCENARIO_DAILY_DETAIL_COLUMNS)
+
+    source["date"] = pd.to_datetime(source["date"], errors="coerce").dt.date
+    for column in (
+        "daily_expected",
+        "forecast_cum",
+        "target_cum",
+        "achievement_rate",
+        "target_achievement_rate",
+    ):
+        source[column] = pd.to_numeric(source[column], errors="coerce")
+    return source.loc[:, list(SCENARIO_DAILY_DETAIL_COLUMNS)].reset_index(drop=True)
+
+
+def build_remaining_operation_direction_source(
+    df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    scenario_id: str,
+    forecast_result: dict[str, object],
+    strategy_result: dict[str, object],
+) -> pd.DataFrame:
+    """Return remaining-day operating direction rows for one selected scenario."""
+    allocation_by_day = _as_dataframe(strategy_result.get("allocation_by_day"))
+    if not allocation_by_day.empty:
+        return _build_allocation_operation_direction_source(
+            allocation_by_day,
+            scenario_id,
+            strategy_result,
+        )
+
+    return _build_maintenance_operation_direction_source(
+        df,
+        as_of_date,
+        metric,
+        scenario_id,
+        forecast_result,
+        strategy_result,
+    )
+
+
+def _build_allocation_operation_direction_source(
+    allocation_by_day: pd.DataFrame,
+    scenario_id: str,
+    strategy_result: dict[str, object],
+) -> pd.DataFrame:
+    available_columns = [
+        column
+        for column in (
+            "date",
+            "is_close_day",
+            "close_type",
+            "original_target",
+            "uplift",
+            "revised_target",
+            "expected_after_revision",
+            "expected_rate",
+            "cap_exceeded",
+        )
+        if column in allocation_by_day.columns
+    ]
+    source = allocation_by_day.loc[:, available_columns].copy()
+    source["date"] = pd.to_datetime(source["date"], errors="coerce").dt.normalize()
+    for column in (
+        "original_target",
+        "uplift",
+        "revised_target",
+        "expected_after_revision",
+        "expected_rate",
+    ):
+        if column not in source.columns:
+            source[column] = 0.0
+        source[column] = pd.to_numeric(source[column], errors="coerce").fillna(0.0)
+    if "cap_exceeded" not in source.columns:
+        source["cap_exceeded"] = False
+    if "is_close_day" not in source.columns:
+        source["is_close_day"] = False
+    if "close_type" not in source.columns:
+        source["close_type"] = ""
+
+    source["scenario_id"] = scenario_id
+    source["strategy_type"] = str(strategy_result.get("strategy_type", PROVISION))
+    source["operation_mode"] = "업리프트 배분"
+    source["expected_daily"] = source["expected_after_revision"]
+    source["day_type"] = source["is_close_day"].map(
+        lambda value: "마감일" if not _is_missing(value) and bool(value) else "일반일"
+    )
+    source["direction"] = source.apply(_allocation_direction_label, axis=1)
+    source["direction_detail"] = source.apply(_allocation_direction_detail, axis=1)
+    source["date_label"] = source["date"].map(_format_chart_index)
+    return source.loc[:, list(REMAINING_OPERATION_DIRECTION_COLUMNS)].dropna(
+        subset=["date"]
+    ).reset_index(drop=True)
+
+
+def _build_maintenance_operation_direction_source(
+    df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    scenario_id: str,
+    forecast_result: dict[str, object],
+    strategy_result: dict[str, object],
+) -> pd.DataFrame:
+    columns = get_metric_columns(metric)
+    required_columns = {"date", "is_close_day", columns["target_daily"]}
+    if df.empty or not required_columns.issubset(df.columns):
+        return pd.DataFrame(columns=REMAINING_OPERATION_DIRECTION_COLUMNS)
+
+    working = df.copy()
+    try:
+        working["date"] = pd.to_datetime(working["date"], errors="raise").dt.normalize()
+        working["is_close_day_bool"] = _coerce_is_close_day(working["is_close_day"])
+        working["original_target"] = pd.to_numeric(
+            working[columns["target_daily"]],
+            errors="raise",
+        ).astype("float64")
+    except Exception:  # noqa: BLE001 - visual source should fail closed.
+        return pd.DataFrame(columns=REMAINING_OPERATION_DIRECTION_COLUMNS)
+
+    remaining = working.loc[working["date"] > pd.Timestamp(as_of_date).normalize()].copy()
+    if remaining.empty:
+        return pd.DataFrame(columns=REMAINING_OPERATION_DIRECTION_COLUMNS)
+
+    expected_rates = _expected_rate_map(forecast_result)
+    remaining["expected_rate"] = remaining["date"].map(
+        lambda value: expected_rates.get(pd.Timestamp(value).normalize(), float("nan"))
+    )
+    remaining["expected_daily"] = remaining["original_target"] * remaining["expected_rate"]
+    remaining["uplift"] = 0.0
+    remaining["revised_target"] = remaining["original_target"]
+    remaining["scenario_id"] = scenario_id
+    remaining["strategy_type"] = str(strategy_result.get("strategy_type", NEUTRAL))
+    remaining["operation_mode"] = _maintenance_operation_mode(strategy_result)
+    remaining["day_type"] = remaining["is_close_day_bool"].map(
+        lambda value: "마감일" if bool(value) else "일반일"
+    )
+    remaining["close_type"] = remaining["close_type"] if "close_type" in remaining else ""
+    remaining["direction"] = _maintenance_direction_label(strategy_result)
+    remaining["direction_detail"] = remaining.apply(
+        lambda row: _maintenance_direction_detail(row, strategy_result),
+        axis=1,
+    )
+    remaining["date_label"] = remaining["date"].map(_format_chart_index)
+    return remaining.loc[:, list(REMAINING_OPERATION_DIRECTION_COLUMNS)].dropna(
+        subset=["date"]
+    ).reset_index(drop=True)
+
+
+def _expected_rate_map(forecast_result: dict[str, object]) -> dict[pd.Timestamp, float]:
+    expected_rate_by_day = forecast_result.get("expected_rate_by_day", {})
+    if not isinstance(expected_rate_by_day, dict):
+        return {}
+    return {
+        pd.Timestamp(day).normalize(): _as_float(rate)
+        for day, rate in expected_rate_by_day.items()
+    }
+
+
+def _allocation_direction_label(row: pd.Series) -> str:
+    if bool(row.get("cap_exceeded", False)):
+        return "상한 점검"
+    if _as_float(row.get("uplift")) > 0:
+        return "추가 배분"
+    return "기존 목표 유지"
+
+
+def _allocation_direction_detail(row: pd.Series) -> str:
+    if bool(row.get("cap_exceeded", False)):
+        return "배분 요청이 일별 상한에 근접하거나 초과합니다. 목표 조정 가능성을 먼저 확인합니다."
+    uplift = _as_float(row.get("uplift"))
+    if math.isfinite(uplift) and uplift > 0:
+        return f"기존 일 목표에 {format_amount(uplift)}를 추가 배분해 잔여 부족분을 회복합니다."
+    return "추가 상향 없이 기존 일 목표를 유지합니다."
+
+
+def _maintenance_operation_mode(strategy_result: dict[str, object]) -> str:
+    strategy_type = str(strategy_result.get("strategy_type", NEUTRAL))
+    if strategy_type == OVERACHIEVEMENT:
+        return "목표 유지/버퍼 관리"
+    return "목표 유지/모니터링"
+
+
+def _maintenance_direction_label(strategy_result: dict[str, object]) -> str:
+    strategy_type = str(strategy_result.get("strategy_type", NEUTRAL))
+    strategy_id = str(strategy_result.get("strategy_id", ""))
+    if strategy_type == OVERACHIEVEMENT and "STRETCH" in strategy_id:
+        return "Stretch 후보"
+    if strategy_type == OVERACHIEVEMENT:
+        return "버퍼 방어"
+    return "유지 모니터링"
+
+
+def _maintenance_direction_detail(
+    row: pd.Series,
+    strategy_result: dict[str, object],
+) -> str:
+    direction = _maintenance_direction_label(strategy_result)
+    expected_daily = format_amount(row.get("expected_daily"))
+    if direction == "Stretch 후보":
+        return f"기존 일 목표는 유지하되 예상 일실적 {expected_daily}를 기준으로 초과분 전환 여지를 봅니다."
+    if direction == "버퍼 방어":
+        return f"기존 일 목표를 유지하고 예상 일실적 {expected_daily} 대비 취소/철회/미결제 리스크를 점검합니다."
+    return f"기존 일 목표를 유지하며 예상 일실적 {expected_daily} 흐름이 계획선에서 이탈하는지 봅니다."
+
+
 def _build_scenario_expected_daily_map(
     working: pd.DataFrame,
     forecast_result: dict[str, object],
@@ -1846,12 +2129,18 @@ def _build_daily_forecast_row(
     forecast_value = _as_float(forecast_cum)
     target_cum = _as_float(day_row.get("target_cum"))
     achievement_rate = safe_divide(forecast_value, monthly_target)
+    target_achievement_rate = safe_divide(target_cum, monthly_target)
     date_value = pd.Timestamp(day_row.get("date")).normalize()
+    week_start, week_end, week_no, week_label = _week_bucket_values(date_value)
     is_close_day = bool(day_row.get("is_close_day_bool", False))
 
     return {
         "date": date_value,
         "date_label": _format_chart_index(date_value),
+        "week_start": week_start,
+        "week_end": week_end,
+        "week_label": week_label,
+        "week_no": week_no,
         "business_day_no": day_row.get("business_day_no", pd.NA),
         "is_close_day": is_close_day,
         "day_type": "마감일" if bool(is_close_day) else "일반일",
@@ -1864,13 +2153,24 @@ def _build_daily_forecast_row(
         "target_cum": target_cum,
         "monthly_target": monthly_target,
         "achievement_rate": achievement_rate,
+        "target_achievement_rate": target_achievement_rate,
         "achievement_label": format_rate(achievement_rate),
+        "target_achievement_label": format_rate(target_achievement_rate),
         "forecast_label": format_amount(forecast_value),
         "target_cum_label": format_amount(target_cum),
         "risk_level_label": risk_level_label,
         "is_selected": series_type == "시나리오 예상" and scenario_id == selected_id,
         "is_as_of_date": date_value == as_of_timestamp,
     }
+
+
+def _week_bucket_values(date_value: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp, int, str]:
+    week_start = (date_value - pd.Timedelta(days=int(date_value.dayofweek))).normalize()
+    week_end = week_start + pd.Timedelta(days=6)
+    iso = date_value.isocalendar()
+    week_no = int(iso.week)
+    week_label = f"{week_start.strftime('%m/%d')}~{week_end.strftime('%m/%d')}"
+    return week_start, week_end, week_no, week_label
 
 
 def _scenario_daily_risk_label(
@@ -3890,7 +4190,7 @@ def _render_visuals(
                 ("daily_forecast_cum", "daily_target_cum", "daily_achievement_rate")
             )
             _render_chart_reading_guide("scenario_daily_progress")
-            daily_forecast_source = build_scenario_daily_forecast_source(
+            _render_forecast_model_scenario_tabs(
                 df,
                 scenario_df,
                 as_of_date,
@@ -3898,19 +4198,6 @@ def _render_visuals(
                 config,
                 selected_scenario_id,
             )
-            _render_scenario_daily_forecast_chart(
-                daily_forecast_source,
-                selected_scenario_id,
-            )
-            _render_visual_metric_definitions(
-                ("monthly_target", "forecast_after_provision", "target_variance")
-            )
-            _render_chart_reading_guide("scenario_target_position")
-            _render_scenario_target_position_chart(scenario_df, selected_scenario_id)
-            _render_chart_reading_guide("scenario_gap_position")
-            _render_scenario_gap_chart(scenario_df, selected_scenario_id)
-            _render_chart_reading_guide("scenario_heatmap")
-            _render_scenario_heatmap(scenario_df, selected_scenario_id)
 
             with st.expander("시나리오 숫자표", expanded=False):
                 value_matrix = build_scenario_value_matrix(scenario_df)
@@ -3925,8 +4212,6 @@ def _render_visuals(
             _render_visual_metric_definitions(
                 ("original_target", "uplift", "revised_target", "cap_target")
             )
-            _render_chart_reading_guide("target_uplift")
-            _render_remaining_uplift_chart(revised_targets_df)
             _render_chart_reading_guide("target_stack")
             _render_remaining_target_stack_chart(revised_targets_df)
 
@@ -4483,54 +4768,338 @@ def _render_strategy_level_visuals(
     )
     _render_chart_reading_guide("scenario_target_position")
     _render_scenario_target_position_chart(strategy_table, selected_scenario_id)
-    _render_chart_reading_guide("scenario_gap_position")
-    _render_scenario_gap_chart(strategy_table, selected_scenario_id)
 
     st.dataframe(_format_display_df(strategy_table), use_container_width=True)
 
 
+def _render_forecast_model_scenario_tabs(
+    df: pd.DataFrame,
+    scenario_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    config: dict[str, Any],
+    selected_scenario_id: str | None,
+) -> None:
+    forecast_keys = [
+        forecast_key
+        for forecast_key in ("F1", "F2", "F3")
+        if not _scenario_df_for_forecast_key(scenario_df, forecast_key).empty
+    ]
+    if not forecast_keys:
+        st.info("예측모델별 시나리오 데이터 없음")
+        return
+
+    tabs = st.tabs([f"{forecast_key} 예측" for forecast_key in forecast_keys])
+    for tab, forecast_key in zip(tabs, forecast_keys):
+        with tab:
+            model_scenario_df = _scenario_df_for_forecast_key(scenario_df, forecast_key)
+            model_selected_id = _default_scenario_for_forecast_key(
+                model_scenario_df,
+                forecast_key,
+                selected_scenario_id,
+            )
+            st.caption(
+                f"{forecast_key} 기준으로 운영전략만 비교합니다. "
+                "그래프는 해당 예측모델의 전략선만 표시합니다."
+            )
+            strategy_scenario_id = _render_model_strategy_selector(
+                model_scenario_df,
+                forecast_key,
+                model_selected_id,
+            )
+            daily_forecast_source = build_scenario_daily_forecast_source(
+                df,
+                model_scenario_df,
+                as_of_date,
+                metric,
+                config,
+                strategy_scenario_id,
+            )
+            _render_scenario_daily_forecast_chart(
+                daily_forecast_source,
+                model_scenario_df,
+                strategy_scenario_id,
+            )
+            _render_remaining_operation_direction_panel(
+                df,
+                as_of_date,
+                metric,
+                config,
+                strategy_scenario_id,
+            )
+            _render_selected_scenario_daily_detail_table(
+                daily_forecast_source,
+                strategy_scenario_id,
+            )
+
+
+def _scenario_df_for_forecast_key(
+    scenario_df: pd.DataFrame,
+    forecast_key: str,
+) -> pd.DataFrame:
+    if scenario_df.empty or "scenario_id" not in scenario_df.columns:
+        return pd.DataFrame(columns=scenario_df.columns)
+    return scenario_df.loc[
+        scenario_df["scenario_id"].astype(str).str.startswith(f"{forecast_key}_")
+    ].reset_index(drop=True)
+
+
+def _default_scenario_for_forecast_key(
+    model_scenario_df: pd.DataFrame,
+    forecast_key: str,
+    selected_scenario_id: str | None,
+) -> str:
+    scenario_ids = model_scenario_df["scenario_id"].astype(str).tolist()
+    selected_id = str(selected_scenario_id or "")
+    if selected_id.startswith(f"{forecast_key}_") and selected_id in scenario_ids:
+        return selected_id
+    if scenario_ids:
+        return scenario_ids[0]
+    return ""
+
+
+def _render_model_strategy_selector(
+    model_scenario_df: pd.DataFrame,
+    forecast_key: str,
+    selected_scenario_id: str,
+) -> str:
+    scenario_ids = model_scenario_df["scenario_id"].astype(str).tolist()
+    if not scenario_ids:
+        return ""
+
+    default_index = (
+        scenario_ids.index(selected_scenario_id)
+        if selected_scenario_id in scenario_ids
+        else 0
+    )
+    return st.selectbox(
+        "잔여기간 운영전략",
+        scenario_ids,
+        format_func=format_scenario_option_label,
+        index=default_index,
+        key=f"remaining_strategy_{forecast_key}_{'_'.join(scenario_ids)}",
+    )
+
+
+def _render_remaining_operation_direction_panel(
+    df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    config: dict[str, Any],
+    scenario_id: str,
+) -> None:
+    if not scenario_id:
+        st.info("잔여기간 운영전략을 선택할 수 없습니다.")
+        return
+
+    forecast_result, strategy_result = run_selected_scenario_detail(
+        df,
+        as_of_date,
+        metric,
+        scenario_id,
+        config,
+    )
+    direction_source = build_remaining_operation_direction_source(
+        df,
+        as_of_date,
+        metric,
+        scenario_id,
+        forecast_result,
+        strategy_result,
+    )
+    if direction_source.empty:
+        st.info("잔여기간 일자별 운영 방향 데이터 없음")
+        return
+
+    st.markdown("**잔여기간 일자별 운영 방향**")
+    _render_remaining_operation_direction_chart(direction_source)
+    with st.expander("잔여기간 운영 방향표", expanded=False):
+        st.dataframe(
+            _format_remaining_operation_direction_df(direction_source),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+def _render_remaining_operation_direction_chart(source: pd.DataFrame) -> None:
+    chart_source = source.copy()
+    chart_source["date"] = pd.to_datetime(chart_source["date"], errors="coerce")
+    chart_source = chart_source.dropna(subset=["date"])
+    if chart_source.empty:
+        st.info("잔여기간 운영 방향 차트 데이터 없음")
+        return
+
+    for column in ("original_target", "uplift", "revised_target", "expected_daily"):
+        chart_source[column] = pd.to_numeric(chart_source[column], errors="coerce")
+
+    date_order = chart_source["date_label"].tolist()
+    bar = (
+        alt.Chart(chart_source)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+        .encode(
+            x=alt.X(
+                "date_label:N",
+                title=None,
+                sort=date_order,
+                axis=alt.Axis(labelAngle=-30, labelLimit=110),
+            ),
+            y=alt.Y(
+                "revised_target:Q",
+                title="일자별 관리 목표(억원)",
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.Color(
+                "direction:N",
+                title="운영 방향",
+                scale=alt.Scale(
+                    domain=[
+                        "추가 배분",
+                        "상한 점검",
+                        "기존 목표 유지",
+                        "버퍼 방어",
+                        "Stretch 후보",
+                        "유지 모니터링",
+                    ],
+                    range=[
+                        "#2563EB",
+                        "#DC2626",
+                        "#94A3B8",
+                        "#059669",
+                        "#7C3AED",
+                        "#0F766E",
+                    ],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("day_type:N", title="일자 구분"),
+                alt.Tooltip("operation_mode:N", title="운영 모드"),
+                alt.Tooltip("direction:N", title="운영 방향"),
+                alt.Tooltip("original_target:Q", title="기존 일 목표", format=chart_value_format("억원")),
+                alt.Tooltip("uplift:Q", title="업리프트", format=chart_value_format("억원")),
+                alt.Tooltip("revised_target:Q", title="관리 목표", format=chart_value_format("억원")),
+                alt.Tooltip("expected_daily:Q", title="예상 일실적", format=chart_value_format("억원")),
+                alt.Tooltip("direction_detail:N", title="해석"),
+            ],
+        )
+    )
+    expected_line = (
+        alt.Chart(chart_source)
+        .mark_line(point=True, color="#111827", strokeWidth=2)
+        .encode(
+            x=alt.X("date_label:N", sort=date_order),
+            y=alt.Y("expected_daily:Q"),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("expected_daily:Q", title="예상 일실적", format=chart_value_format("억원")),
+            ],
+        )
+    )
+    chart = (
+        (bar + expected_line)
+        .properties(height=280)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _format_remaining_operation_direction_df(source: pd.DataFrame) -> pd.DataFrame:
+    result = source.copy()
+    result = result.loc[:, list(REMAINING_OPERATION_DIRECTION_COLUMNS)]
+    result["date"] = result["date"].map(_format_date)
+    for column in ("original_target", "uplift", "revised_target", "expected_daily"):
+        result[column] = result[column].map(format_amount)
+    result["expected_rate"] = result["expected_rate"].map(format_rate)
+    return result.rename(
+        columns={
+            "date": "날짜",
+            "date_label": "날짜 라벨",
+            "scenario_id": "시나리오",
+            "strategy_type": "전략 구분",
+            "operation_mode": "운영 모드",
+            "day_type": "일자 구분",
+            "close_type": "마감 유형",
+            "original_target": "기존 일 목표",
+            "uplift": "업리프트",
+            "revised_target": "관리 목표",
+            "expected_daily": "예상 일실적",
+            "expected_rate": "예상 달성률",
+            "direction": "운영 방향",
+            "direction_detail": "방향 해석",
+        }
+    )
+
+
 def _render_scenario_daily_forecast_chart(
     source: pd.DataFrame,
+    scenario_df: pd.DataFrame,
     selected_scenario_id: str | None = None,
 ) -> None:
     if source.empty:
-        st.info("일자별 시나리오 누적 전망 데이터 없음")
+        st.info("주간 시나리오 누적 전망 데이터 없음")
         return
 
     chart_source = source.copy()
     chart_source["date"] = pd.to_datetime(chart_source["date"], errors="coerce")
+    chart_source["week_start"] = pd.to_datetime(chart_source["week_start"], errors="coerce")
+    chart_source["week_end"] = pd.to_datetime(chart_source["week_end"], errors="coerce")
     chart_source = chart_source.dropna(subset=["date", "forecast_cum"])
     if chart_source.empty:
-        st.info("일자별 시나리오 누적 전망 데이터 없음")
+        st.info("주간 시나리오 누적 전망 데이터 없음")
         return
 
     target_source = (
-        chart_source.loc[:, ["date", "date_label", "target_cum", "monthly_target"]]
+        chart_source.loc[
+            :,
+            [
+                "date",
+                "week_end",
+                "week_label",
+                "target_cum",
+                "monthly_target",
+                "target_achievement_rate",
+                "target_achievement_label",
+            ],
+        ]
         .drop_duplicates("date")
         .sort_values("date")
     )
+    week_marker_source = (
+        chart_source.loc[:, ["week_start", "week_label"]]
+        .dropna(subset=["week_start"])
+        .drop_duplicates("week_start")
+        .sort_values("week_start")
+    )
     actual_source = chart_source.loc[chart_source["series_type"] == "확정 실적"]
     forecast_source = chart_source.loc[chart_source["series_type"] == "시나리오 예상"]
-    close_day_source = target_source.merge(
-        chart_source.loc[
-            chart_source["is_close_day"],
-            ["date", "day_type", "close_type"],
-        ].drop_duplicates("date"),
-        on="date",
-        how="inner",
-    )
+    position_source = build_scenario_target_position_source(scenario_df, selected_scenario_id)
+    forecast_source = _attach_scenario_position_fields(forecast_source, position_source)
+    close_day_source = source.loc[
+        source["is_close_day"],
+        ["date", "date_label", "close_type"],
+    ].drop_duplicates("date")
+    close_day_source["date"] = pd.to_datetime(close_day_source["date"], errors="coerce")
+    close_day_source = close_day_source.dropna(subset=["date"])
     close_day_source["band_start"] = close_day_source["date"] - pd.Timedelta(hours=12)
     close_day_source["band_end"] = close_day_source["date"] + pd.Timedelta(hours=12)
 
-    forecast_max = _finite_max(chart_source["forecast_cum"])
-    target_max = _finite_max(target_source["target_cum"])
-    monthly_target = _finite_max(target_source["monthly_target"])
-    y_max = max(forecast_max, target_max, monthly_target, 1.0)
+    y_max = max(
+        _finite_max(chart_source["achievement_rate"]),
+        _finite_max(target_source["target_achievement_rate"]),
+        1.0,
+    )
     scenario_order = forecast_source["scenario_id"].drop_duplicates().tolist()
     selected_id = str(selected_scenario_id or "")
     final_label_source = _selected_daily_final_label_source(forecast_source, selected_id)
-    as_of_dates = chart_source.loc[chart_source["is_as_of_date"], "date"].drop_duplicates()
+    as_of_dates = source.loc[source["is_as_of_date"], "date"].drop_duplicates()
     as_of_source = pd.DataFrame({"as_of_date": as_of_dates.tolist()[:1]})
+    zoom = alt.selection_interval(bind="scales", encodings=["x"], name="weekly_zoom")
+    x_axis = alt.Axis(
+        format="%m/%d",
+        labelAngle=0,
+        tickCount=alt.TimeIntervalStep("week", 1),
+    )
 
     close_day_band = (
         alt.Chart(close_day_source)
@@ -4544,38 +5113,59 @@ def _render_scenario_daily_forecast_chart(
             ],
         )
     )
+    week_markers = (
+        alt.Chart(week_marker_source)
+        .mark_rule(color="#E2E8F0", strokeWidth=1)
+        .encode(
+            x=alt.X("week_start:T", title=None),
+            tooltip=[alt.Tooltip("week_label:N", title="주간")],
+        )
+    )
     target_line = (
         alt.Chart(target_source)
-        .mark_line(color="#94A3B8", strokeDash=[6, 5], strokeWidth=1.8)
+        .mark_line(color="#94A3B8", strokeDash=[6, 5], strokeWidth=1.8, interpolate="linear")
         .encode(
-            x=alt.X("date:T", title=None, axis=alt.Axis(format="%m/%d")),
+            x=alt.X(
+                "date:T",
+                title=None,
+                axis=x_axis,
+            ),
             y=alt.Y(
-                "target_cum:Q",
-                title="누적 실적/예상(억원)",
+                "target_achievement_rate:Q",
+                title="월 목표 달성률",
                 scale=alt.Scale(domain=[0, y_max * 1.08], nice=True),
-                axis=alt.Axis(format=chart_value_format("억원")),
+                axis=alt.Axis(format=".0%"),
             ),
             tooltip=[
-                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("week_label:N", title="주간"),
                 alt.Tooltip("target_cum:Q", title="누적 목표선", format=chart_value_format("억원")),
+                alt.Tooltip("target_achievement_rate:Q", title="누적 목표 달성률", format=".1%"),
             ],
         )
     )
     actual_line = (
         alt.Chart(actual_source)
-        .mark_line(point=True, color="#1D4ED8", strokeWidth=3)
+        .mark_line(color="#1D4ED8", strokeWidth=3, interpolate="linear")
         .encode(
-            x=alt.X("date:T", title=None, axis=alt.Axis(format="%m/%d")),
-            y=alt.Y("forecast_cum:Q"),
-            tooltip=_daily_forecast_tooltips("확정 누적 실적"),
+            x=alt.X(
+                "date:T",
+                title=None,
+                axis=x_axis,
+            ),
+            y=alt.Y("achievement_rate:Q"),
+            tooltip=_daily_forecast_tooltips("확정 누적 실적", include_variance=False),
         )
     )
     forecast_lines = (
         alt.Chart(forecast_source)
-        .mark_line(point=alt.OverlayMarkDef(filled=True, size=42), interpolate="monotone")
+        .mark_line(interpolate="linear")
         .encode(
-            x=alt.X("date:T", title=None, axis=alt.Axis(format="%m/%d")),
-            y=alt.Y("forecast_cum:Q"),
+            x=alt.X(
+                "date:T",
+                title=None,
+                axis=x_axis,
+            ),
+            y=alt.Y("achievement_rate:Q"),
             color=alt.Color(
                 "scenario_id:N",
                 title="시나리오",
@@ -4589,15 +5179,15 @@ def _render_scenario_daily_forecast_chart(
         )
     )
     monthly_rule = (
-        alt.Chart(pd.DataFrame({"monthly_target": [monthly_target]}))
+        alt.Chart(pd.DataFrame({"goal_rate": [1.0]}))
         .mark_rule(color="#DC2626", strokeDash=[7, 5], strokeWidth=2)
         .encode(
-            y="monthly_target:Q",
+            y="goal_rate:Q",
             tooltip=[
                 alt.Tooltip(
-                    "monthly_target:Q",
-                    title="공식 월 목표",
-                    format=chart_value_format("억원"),
+                    "goal_rate:Q",
+                    title="공식 월 목표선",
+                    format=".0%",
                 )
             ],
         )
@@ -4615,15 +5205,15 @@ def _render_scenario_daily_forecast_chart(
         .mark_text(align="right", baseline="middle", dx=-7, dy=-8, fontSize=11, fontWeight="bold")
         .encode(
             x="date:T",
-            y="forecast_cum:Q",
+            y="achievement_rate:Q",
             text="final_label:N",
             color=alt.value("#111827"),
         )
     )
-
-    chart = (
+    progress_chart = (
         (
             close_day_band
+            + week_markers
             + target_line
             + actual_line
             + forecast_lines
@@ -4631,16 +5221,74 @@ def _render_scenario_daily_forecast_chart(
             + as_of_rule
             + final_label
         )
-        .properties(height=360)
+        .properties(height=330)
+        .add_params(zoom)
+    )
+
+    chart = (
+        progress_chart
         .configure_axis(labelFontSize=11, titleFontSize=12)
         .configure_legend(labelFontSize=11, titleFontSize=12)
     )
+    st.caption("차트 위에서 마우스 휠 또는 드래그로 주간 구간을 확대/축소할 수 있습니다.")
     st.altair_chart(chart, use_container_width=True)
 
 
-def _daily_forecast_tooltips(value_title: str) -> list[alt.Tooltip]:
-    return [
-        alt.Tooltip("date_label:N", title="날짜"),
+def _render_selected_scenario_daily_detail_table(
+    daily_source: pd.DataFrame,
+    selected_scenario_id: str | None,
+) -> None:
+    detail = build_selected_scenario_daily_detail_source(daily_source, selected_scenario_id)
+    if detail.empty:
+        return
+
+    with st.expander("선택 시나리오 일자별 추정 내역", expanded=False):
+        st.dataframe(
+            _format_daily_forecast_detail_df(detail),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+def _format_daily_forecast_detail_df(detail: pd.DataFrame) -> pd.DataFrame:
+    result = detail.copy()
+    result["date"] = result["date"].map(_format_date)
+    result["daily_expected"] = result["daily_expected"].map(_format_optional_amount)
+    result["forecast_cum"] = result["forecast_cum"].map(format_amount)
+    result["target_cum"] = result["target_cum"].map(format_amount)
+    result["achievement_rate"] = result["achievement_rate"].map(format_rate)
+    result["target_achievement_rate"] = result["target_achievement_rate"].map(format_rate)
+    return result.rename(
+        columns={
+            "date": "날짜",
+            "scenario_id": "시나리오",
+            "series_type": "구분",
+            "day_type": "일자 구분",
+            "close_type": "마감 유형",
+            "daily_expected": "당일 추정",
+            "forecast_cum": "누적 실적/예상",
+            "target_cum": "누적 목표선",
+            "achievement_rate": "월 목표 달성률",
+            "target_achievement_rate": "계획선 달성률",
+        }
+    )
+
+
+def _format_optional_amount(value: object) -> str:
+    number = _as_float(value)
+    if not math.isfinite(number):
+        return "-"
+    return format_amount(number)
+
+
+def _daily_forecast_tooltips(
+    value_title: str,
+    *,
+    include_variance: bool = True,
+) -> list[alt.Tooltip]:
+    tooltips = [
+        alt.Tooltip("week_label:N", title="주간"),
+        alt.Tooltip("date_label:N", title="대표일"),
         alt.Tooltip("scenario_id:N", title="시나리오"),
         alt.Tooltip("day_type:N", title="일자 구분"),
         alt.Tooltip("close_type:N", title="마감 유형"),
@@ -4648,8 +5296,12 @@ def _daily_forecast_tooltips(value_title: str) -> list[alt.Tooltip]:
         alt.Tooltip("forecast_cum:Q", title=value_title, format=chart_value_format("억원")),
         alt.Tooltip("target_cum:Q", title="누적 목표선", format=chart_value_format("억원")),
         alt.Tooltip("achievement_rate:Q", title="월 목표 달성률", format=".1%"),
+        alt.Tooltip("target_achievement_rate:Q", title="계획선 달성률", format=".1%"),
         alt.Tooltip("risk_level_label:N", title="위험등급"),
     ]
+    if include_variance:
+        tooltips.insert(-1, alt.Tooltip("variance_label:N", title="월말 목표 대비 차이"))
+    return tooltips
 
 
 def _finite_max(values: pd.Series) -> float:
@@ -4677,14 +5329,45 @@ def _selected_daily_final_label_source(
     )
     if selected_scenario_id and selected_scenario_id in set(last_rows["scenario_id"].astype(str)):
         last_rows = last_rows.loc[last_rows["scenario_id"].astype(str) == selected_scenario_id]
+    variance_label = last_rows.get(
+        "variance_label",
+        pd.Series([""] * len(last_rows), index=last_rows.index),
+    ).fillna("")
     last_rows["final_label"] = (
         last_rows["scenario_id"].astype(str)
         + " "
-        + last_rows["forecast_label"].astype(str)
-        + " / "
         + last_rows["achievement_label"].astype(str)
+        + " / "
+        + variance_label.astype(str)
     )
     return last_rows
+
+
+def _attach_scenario_position_fields(
+    forecast_source: pd.DataFrame,
+    position_source: pd.DataFrame,
+) -> pd.DataFrame:
+    if forecast_source.empty or position_source.empty:
+        return forecast_source
+
+    fields = [
+        column
+        for column in (
+            "scenario_id",
+            "target_variance",
+            "variance_label",
+            "target_status_label",
+            "forecast_after_provision",
+        )
+        if column in position_source.columns
+    ]
+    if len(fields) <= 1:
+        return forecast_source
+    return forecast_source.merge(
+        position_source.loc[:, fields].drop_duplicates("scenario_id"),
+        on="scenario_id",
+        how="left",
+    )
 
 
 def _render_scenario_target_position_chart(

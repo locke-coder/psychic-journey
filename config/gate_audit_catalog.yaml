@@ -483,6 +483,277 @@ gates:
       - Final audit confirms no suspicious code mutates original input files.
       - Final audit confirms no weekday-based close-day inference is present.
 
+  - gate_id: G19
+    gate_name: History Store Gate
+    phase: history_store
+    required_files:
+      - src/history_store.py
+      - src/final_actual_store.py
+      - tests/test_history_store.py
+      - tests/test_final_actual_store.py
+      - tests/test_e2e_history_backtest.py
+    pytest_targets:
+      - tests/test_history_store.py
+      - tests/test_final_actual_store.py
+      - tests/test_e2e_history_backtest.py
+    keyword_scan_files:
+      - src/history_store.py
+      - src/final_actual_store.py
+      - tests/test_history_store.py
+      - tests/test_final_actual_store.py
+      - tests/test_e2e_history_backtest.py
+    required_keywords:
+      - forecast_history.csv
+      - final_actuals.csv
+      - append_forecast_history
+      - load_forecast_history
+      - build_forecast_history_rows
+      - upsert_final_actual
+      - load_final_actuals
+      - build_final_actual_record
+      - E2E-HISTORY-BACKTEST-RUN
+    required_test_patterns:
+      - file: tests/test_history_store.py
+        label: forecast_history csv save test exists
+        any_of:
+          - test_history_file_is_created
+      - file: tests/test_final_actual_store.py
+        label: final_actuals csv save test exists
+        any_of:
+          - test_new_final_actual_is_saved
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E saves forecast_history and final_actuals
+        any_of:
+          - test_history_backtest_export_app_e2e_flow
+      - file: tests/test_e2e_history_backtest.py
+        label: forecast_history.csv path is asserted
+        any_of:
+          - forecast_history.csv
+      - file: tests/test_e2e_history_backtest.py
+        label: final_actuals.csv path is asserted
+        any_of:
+          - final_actuals.csv
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+      - "date_range("
+      - "bdate_range("
+      - "period_range("
+      - "input_path.write"
+      - "input_path.unlink"
+      - "input_path.rename"
+      - "input_path.replace"
+      - "to_csv(input_path"
+      - "to_excel(input_path"
+    warning_keywords: []
+    pass_conditions:
+      - Forecast history rows are built from scenario output and saved to forecast_history.csv.
+      - Final month-end actuals are upserted to final_actuals.csv by target_month and metric.
+      - Missing history files load as canonical empty frames.
+      - History storage tests do not mutate source input files.
+
+  - gate_id: G20
+    gate_name: Backtest Engine Gate
+    phase: backtest_engine
+    required_files:
+      - src/backtest_engine.py
+      - tests/test_backtest_engine.py
+      - tests/test_e2e_history_backtest.py
+    pytest_targets:
+      - tests/test_backtest_engine.py
+      - tests/test_e2e_history_backtest.py
+    keyword_scan_files:
+      - src/backtest_engine.py
+      - tests/test_backtest_engine.py
+      - tests/test_e2e_history_backtest.py
+    required_keywords:
+      - build_backtest_dataset
+      - summarize_by_forecast_model
+      - MODEL_SUMMARY_COLUMNS
+      - error_rate
+      - signed_error_rate
+      - mean_error_rate
+      - best_model_by_error_rate
+    required_test_patterns:
+      - file: tests/test_backtest_engine.py
+        label: row-level error_rate calculation test exists
+        any_of:
+          - test_row_level_error_columns_are_calculated
+      - file: tests/test_backtest_engine.py
+        label: model summary generation test exists
+        any_of:
+          - test_summarize_by_forecast_model_builds_model_summary
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E backtest dataset and model summary assertions exist
+        any_of:
+          - summarize_by_forecast_model
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E error_rate assertion exists
+        any_of:
+          - expected_error_rate
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+      - "date_range("
+      - "bdate_range("
+      - "period_range("
+      - "input_path.write"
+      - "input_path.unlink"
+      - "input_path.rename"
+      - "input_path.replace"
+      - "to_csv(input_path"
+      - "to_excel(input_path"
+    warning_keywords: []
+    pass_conditions:
+      - Backtest joins forecast_history to final_actuals by target_month and metric.
+      - Backtest calculates row-level signed and absolute error rates.
+      - Model-level summary exposes sample_count, mean error rate, median error rate, bias, and best-model flag.
+
+  - gate_id: G21
+    gate_name: Visualization / Insight Gate
+    phase: visualization_insight
+    required_files:
+      - src/visualization_builder.py
+      - src/model_weight_engine.py
+      - src/confidence_band.py
+      - src/insight_engine.py
+      - tests/test_e2e_history_backtest.py
+    pytest_targets:
+      - tests/test_e2e_history_backtest.py
+    keyword_scan_files:
+      - src/visualization_builder.py
+      - src/model_weight_engine.py
+      - src/confidence_band.py
+      - src/insight_engine.py
+      - tests/test_e2e_history_backtest.py
+    required_keywords:
+      - build_visualization
+      - model_weight
+      - confidence_lower
+      - confidence_upper
+      - insight
+      - ModelWeights
+      - ConfidenceBand
+      - Insights
+    required_test_patterns:
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E visualization dataframe generation exists
+        any_of:
+          - scenario_chart_df
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E model weights export check exists
+        any_of:
+          - ModelWeights
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E insights export check exists
+        any_of:
+          - Insights
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+      - "date_range("
+      - "bdate_range("
+      - "period_range("
+      - "input_path.write"
+      - "input_path.unlink"
+      - "input_path.rename"
+      - "input_path.replace"
+      - "to_csv(input_path"
+      - "to_excel(input_path"
+    warning_keywords: []
+    pass_conditions:
+      - Visualization builder creates chart-ready forecast history and backtest data.
+      - Model weight engine prepares model weights from model-level error rates.
+      - Confidence band output exposes lower and upper forecast bounds.
+      - Insight engine emits readable Backtest and history interpretation rows.
+
+  - gate_id: G22
+    gate_name: History UI Gate
+    phase: history_ui
+    required_files:
+      - app.py
+      - tests/test_app_smoke.py
+      - tests/test_e2e_history_backtest.py
+    pytest_targets:
+      - tests/test_app_smoke.py
+      - tests/test_e2e_history_backtest.py
+    keyword_scan_files:
+      - app.py
+      - tests/test_app_smoke.py
+      - tests/test_e2e_history_backtest.py
+    required_keywords:
+      - HISTORY_TAB_LABEL
+      - 예측 이력 / Backtest
+      - load_history_tables_for_app
+      - forecast_history 테이블
+      - final_actuals 테이블
+      - build_backtest_dataset
+      - forecast_history 파일이 없거나
+      - final_actuals가 아직 없습니다
+    required_test_patterns:
+      - file: tests/test_app_smoke.py
+        label: History / Backtest tab label test exists
+        any_of:
+          - test_forecast_history_backtest_tab_label_exists
+      - file: tests/test_app_smoke.py
+        label: missing history files are safe in app smoke test
+        any_of:
+          - test_missing_history_files_are_loaded_as_empty_tables
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E app import and tab assertion exists
+        any_of:
+          - imported_app.HISTORY_TAB_LABEL
+      - file: tests/test_e2e_history_backtest.py
+        label: E2E missing history UI safe handling exists
+        any_of:
+          - test_history_ui_handles_missing_storage_files_safely
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+      - "date_range("
+      - "bdate_range("
+      - "period_range("
+      - "input_path.write"
+      - "input_path.unlink"
+      - "input_path.rename"
+      - "input_path.replace"
+      - "to_csv(input_path"
+      - "to_excel(input_path"
+    warning_keywords: []
+    pass_conditions:
+      - Streamlit exposes the 예측 이력 / Backtest tab.
+      - Forecast history and final actuals tables are rendered safely.
+      - Missing history files are handled as empty canonical frames.
+      - Backtest summary is displayed only when forecast_history and final_actuals can be matched.
+
   - gate_id: ALL
     gate_name: All Gates
     phase: all
@@ -493,6 +764,9 @@ gates:
       - src/overachievement_models.py
       - src/scenario_runner.py
       - src/report_builder.py
+      - src/history_store.py
+      - src/final_actual_store.py
+      - src/backtest_engine.py
       - app.py
       - tests/test_gate_audit_catalog.py
       - tests/test_forecast_models.py
@@ -501,8 +775,18 @@ gates:
       - tests/test_scenario_runner.py
       - tests/test_report_builder.py
       - tests/test_app_smoke.py
+      - tests/test_history_store.py
+      - tests/test_final_actual_store.py
+      - tests/test_backtest_engine.py
+      - tests/test_e2e_history_backtest.py
     pytest_targets:
       - tests
+    required_gates:
+      - G18
+      - G19
+      - G20
+      - G21
+      - G22
     required_keywords:
       - target_status
       - target_variance
@@ -524,6 +808,11 @@ gates:
       - O1
       - O2
       - O3
+      - forecast_history
+      - final_actuals
+      - error_rate
+      - HISTORY_TAB_LABEL
+      - Backtest
     forbidden_patterns:
       - ".weekday("
       - "dt.weekday"
@@ -539,3 +828,4 @@ gates:
       - All individual Gate definitions are available to Gate Runner.
       - All required audit keywords are declared.
       - All common forbidden close-day inference patterns are declared.
+      - G19, G20, G21, and G22 are included in the ALL gate dependency chain.
