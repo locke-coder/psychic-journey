@@ -21,8 +21,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - local test runtime may omit Streamlit.
     st = None
 
-from src.close_cycle_engine import build_close_cycle_summary
+from src import history_schema
+from src.backtest_engine import build_backtest_dataset, summarize_by_forecast_model
+from src.close_cycle_engine import _coerce_is_close_day, build_close_cycle_summary
 from src.excel_exporter import export_daily_report
+from src.final_actual_store import load_final_actuals
 from src.forecast_models import (
     F1_CUMULATIVE_RATE,
     F2_LAST_TWO_CLOSES,
@@ -30,6 +33,7 @@ from src.forecast_models import (
     run_forecast_model,
 )
 from src.loader import load_input
+from src.history_store import append_forecast_history, build_forecast_history_rows
 from src.next_close import calculate_next_close_required
 from src.overachievement_models import (
     N1_MAINTAIN_TARGET,
@@ -106,6 +110,7 @@ HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS = (
     ("2026-04-02", "목", 2, False, "일반", 2.6, 2.4, 35.0, 31.8, "다음 월은 1부터 다시 시작"),
     ("2026-04-06", "월", 3, True, "월마감", 14.5, 13.3, 47.0, 42.7, "다음 월은 1부터 다시 시작"),
 )
+HISTORY_TAB_LABEL = "예측 이력 / Backtest"
 ACCESS_SESSION_STATE_KEY = "limited_distribution_access_granted"
 ACCESS_PASSWORD_SETTING_KEYS = (
     "APP_ACCESS_PASSWORD",
@@ -128,6 +133,12 @@ CHART_COLOR_RANGE = (
     "#0F766E",
     "#9333EA",
     "#4B5563",
+)
+WEIGHTED_FORECAST_COLUMN_TOKENS = ("weighted_forecast", "weighted_forecast_amount")
+CONFIDENCE_BAND_COLUMN_PAIRS = (
+    ("confidence_lower", "confidence_upper"),
+    ("forecast_lower", "forecast_upper"),
+    ("lower_bound", "upper_bound"),
 )
 
 FORECAST_MODEL_OPTIONS = {
@@ -253,11 +264,31 @@ AMOUNT_COLUMNS = {
     "revised_target",
     "cap_target",
     "expected_after_revision",
+    "final_actual",
+    "cancellation_amount",
+    "net_actual",
+    "forecast_error",
+    "abs_error",
+    "mean_abs_error",
+    "bias",
+    "weighted_forecast",
+    "weighted_forecast_amount",
+    "confidence_lower",
+    "confidence_upper",
+    "forecast_lower",
+    "forecast_upper",
+    "lower_bound",
+    "upper_bound",
 }
 RATE_COLUMNS = {
     "forecast_rate",
     "expected_rate",
     "allocation_weight",
+    "final_achievement_rate",
+    "error_rate",
+    "signed_error_rate",
+    "mean_error_rate",
+    "median_error_rate",
 }
 DIRECT_EDITABLE_COLUMNS = (
     "sales_target_daily",
@@ -315,6 +346,28 @@ STRATEGY_LEVEL_CHART_COLUMNS = (
     "remaining_surplus_buffer",
     "minimum_remaining_to_hit_target",
     "relief_amount",
+)
+SCENARIO_DAILY_FORECAST_COLUMNS = (
+    "date",
+    "date_label",
+    "business_day_no",
+    "is_close_day",
+    "day_type",
+    "close_type",
+    "scenario_id",
+    "series_type",
+    "line_group",
+    "daily_expected",
+    "forecast_cum",
+    "target_cum",
+    "monthly_target",
+    "achievement_rate",
+    "achievement_label",
+    "forecast_label",
+    "target_cum_label",
+    "risk_level_label",
+    "is_selected",
+    "is_as_of_date",
 )
 VALIDATION_COLUMN_LABELS = {
     "date": "날짜",
@@ -384,6 +437,38 @@ DISPLAY_COLUMN_LABELS = {
     "expected_after_revision": "수정 후 예상 일 실적",
     "expected_rate": "예상 달성률",
     "allocation_weight": "배분 비중",
+    "run_id": "저장 ID",
+    "run_datetime": "저장 시각",
+    "target_month": "대상 월",
+    "as_of_date": "기준일",
+    "metric": "지표",
+    "strategy_id": "전략 ID",
+    "final_actual": "월마감 확정 실적",
+    "final_achievement_rate": "확정 달성률",
+    "final_status": "확정 목표 상태",
+    "cancellation_amount": "취소/철회 금액",
+    "net_actual": "순 확정 실적",
+    "updated_at": "확정 저장 시각",
+    "forecast_error": "예측 오차",
+    "abs_error": "절대 오차",
+    "error_rate": "오차율",
+    "signed_error_rate": "방향성 오차율",
+    "over_forecast_flag": "과대 예측 여부",
+    "under_forecast_flag": "과소 예측 여부",
+    "sample_count": "표본 수",
+    "mean_abs_error": "평균 절대 오차",
+    "mean_error_rate": "평균 오차율",
+    "median_error_rate": "중앙 오차율",
+    "bias": "bias",
+    "best_model_by_error_rate": "최저 오차 모델",
+    "weighted_forecast": "Weighted Forecast",
+    "weighted_forecast_amount": "Weighted Forecast",
+    "confidence_lower": "Confidence Band 하단",
+    "confidence_upper": "Confidence Band 상단",
+    "forecast_lower": "Confidence Band 하단",
+    "forecast_upper": "Confidence Band 상단",
+    "lower_bound": "Confidence Band 하단",
+    "upper_bound": "Confidence Band 상단",
 }
 METRIC_DISPLAY_LABELS = {
     "sales": "판매실적",
@@ -545,6 +630,21 @@ VALIDATION_TERM_REPLACEMENTS = {
     "fallback": "대체 계산",
 }
 VISUAL_METRIC_DEFINITIONS = {
+    "daily_forecast_cum": {
+        "label": "일자별 누적 예상",
+        "unit": "억원",
+        "definition": "기준일까지는 확정 누적 실적, 기준일 이후는 각 시나리오의 일자별 예상 실적을 누적한 값입니다.",
+    },
+    "daily_target_cum": {
+        "label": "일자별 누적 목표선",
+        "unit": "억원",
+        "definition": "입력표의 일 목표를 날짜 순서대로 누적한 공식 계획선입니다.",
+    },
+    "daily_achievement_rate": {
+        "label": "월 목표 달성률",
+        "unit": "%",
+        "definition": "각 날짜의 누적 실적 또는 누적 예상 실적을 공식 월 목표로 나눈 비율입니다.",
+    },
     "forecast_amount": {
         "label": "월말 예상 실적(보정 전)",
         "unit": "억원",
@@ -652,6 +752,15 @@ VISUAL_METRIC_DEFINITIONS = {
     },
 }
 VISUAL_READING_GUIDES = {
+    "scenario_daily_progress": {
+        "title": "일자별 시나리오 누적 전망",
+        "steps": (
+            "기준일까지는 확정 누적 실적선을 먼저 확인합니다.",
+            "기준일 이후 각 시나리오 선이 월 목표선에 얼마나 빨리 접근하는지 비교합니다.",
+            "마감일 음영 구간에서 선의 기울기가 크게 달라지면 해당 시나리오가 마감일 의존도가 높다는 뜻입니다.",
+        ),
+        "decision": "같은 월말 목표 달성이라도 더 이른 날짜에 목표선에 가까워지는 조합이 운영상 여유가 큽니다.",
+    },
     "scenario_amount": {
         "title": "월말 예상 실적 비교",
         "steps": (
@@ -660,6 +769,33 @@ VISUAL_READING_GUIDES = {
             "전략 반영 후 예상이 목표선을 회복하는지 보고 선택 전략의 효과를 판단합니다.",
         ),
         "decision": "전략 반영 후 예상이 목표보다 낮으면 보정 강도가 부족하고, 목표보다 높으면 초과분 관리 전략을 함께 봅니다.",
+    },
+    "scenario_target_position": {
+        "title": "목표선 대비 예상 실적",
+        "steps": (
+            "빨간 기준선은 공식 월 목표입니다.",
+            "막대 끝이 기준선 오른쪽이면 목표 초과, 왼쪽이면 목표 미달입니다.",
+            "선택 시나리오는 진한 테두리로 표시해 다른 조합과 바로 비교합니다.",
+        ),
+        "decision": "기준선을 넘기는 조합 중 위험등급과 운영 부담이 낮은 조합을 우선 검토합니다.",
+    },
+    "scenario_gap_position": {
+        "title": "부족/초과 금액",
+        "steps": (
+            "0선을 기준으로 오른쪽은 초과 예상, 왼쪽은 미달 예상입니다.",
+            "막대 길이가 길수록 목표선에서 더 멀리 떨어진 조합입니다.",
+            "미달 막대는 보정 필요 규모, 초과 막대는 버퍼 또는 Stretch 후보 규모로 봅니다.",
+        ),
+        "decision": "미달 폭이 큰 조합은 실행 부담이 크고, 초과 폭이 큰 조합은 초과분 관리 전략이 중요합니다.",
+    },
+    "scenario_heatmap": {
+        "title": "시나리오 조합 지도",
+        "steps": (
+            "행은 예측모델(F1~F3), 열은 운영전략(P/O/N)을 뜻합니다.",
+            "붉은 칸은 목표 미달, 초록 칸은 목표 초과 방향입니다.",
+            "칸 안 숫자는 월 목표 대비 부족/초과 금액입니다.",
+        ),
+        "decision": "같은 색이 반복되면 모델보다 시장 흐름 영향이 크고, 행마다 색이 달라지면 예측모델 선택 민감도가 큽니다.",
     },
     "scenario_status": {
         "title": "목표 상태 확인",
@@ -687,6 +823,24 @@ VISUAL_READING_GUIDES = {
             "수정 후 일 목표는 기존 목표와 추가 배분이 반영된 최종 관리 목표입니다.",
         ),
         "decision": "수정 후 일 목표가 특정 날짜에 과도하게 몰리면 배분 전략이나 상한 설정을 재검토합니다.",
+    },
+    "target_uplift": {
+        "title": "일자별 추가 부담",
+        "steps": (
+            "막대는 목표 달성을 위해 해당 날짜에 추가로 얹힌 목표입니다.",
+            "마감일에 막대가 몰리면 마감 당일 의존도가 높은 계획입니다.",
+            "일반일에도 막대가 넓게 퍼지면 남은 기간 전체에 부담을 분산한 계획입니다.",
+        ),
+        "decision": "특정 날짜의 추가 부담이 과도하면 P2/P3 같은 배분 전략을 바꿔 비교합니다.",
+    },
+    "target_stack": {
+        "title": "기존 목표와 추가 배분",
+        "steps": (
+            "회색은 기존 일 목표, 주황색은 새로 더한 추가 배분 목표입니다.",
+            "막대 전체 높이가 수정 후 일 목표입니다.",
+            "상한선에 가까운 날짜가 많을수록 실행 여력이 부족하다는 신호입니다.",
+        ),
+        "decision": "추가 배분이 상한선 근처에 반복되면 목표 상향 강도나 잔여 기간 운영 계획을 재검토합니다.",
     },
     "target_cap": {
         "title": "상한과 예상 실적",
@@ -817,6 +971,10 @@ def main() -> None:
         next_close_result,
         validation_result,
         historical_context,
+        metric,
+        as_of_date,
+        df,
+        config,
     )
 
     st.header("7. 다운로드")
@@ -977,6 +1135,7 @@ def _inject_app_styles() -> None:
             --font-caption: 0.78rem;
             --font-small: 0.72rem;
             --font-kpi-value: 1.02rem;
+            --metric-card-height: 100px;
             --line-body: 1.48;
             --line-tight: 1.22;
         }
@@ -1051,7 +1210,9 @@ def _inject_app_styles() -> None:
         }
 
         [data-testid="stMetric"] {
-            min-height: 74px;
+            height: var(--metric-card-height);
+            min-height: var(--metric-card-height);
+            box-sizing: border-box;
             padding: 0.58rem 0.72rem;
             background: var(--panel-bg);
             border: 1px solid var(--line-soft);
@@ -1505,6 +1666,325 @@ def build_scenario_chart_data(scenario_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def build_scenario_daily_forecast_source(
+    df: pd.DataFrame,
+    scenario_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    config: dict[str, Any],
+    selected_scenario_id: str | None = None,
+) -> pd.DataFrame:
+    """Return cumulative daily actuals and scenario forecasts for progress charts."""
+    columns = get_metric_columns(metric)
+    required_columns = {"date", "is_close_day", columns["target_daily"], columns["actual_cum"]}
+    if df.empty or scenario_df.empty or not required_columns.issubset(df.columns):
+        return pd.DataFrame(columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+    if "scenario_id" not in scenario_df.columns:
+        return pd.DataFrame(columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+
+    working = df.copy()
+    try:
+        working["date"] = pd.to_datetime(working["date"], errors="raise").dt.normalize()
+        working = working.sort_values(["date"], kind="mergesort").reset_index(drop=True)
+        working["target_daily_numeric"] = pd.to_numeric(
+            working[columns["target_daily"]],
+            errors="raise",
+        ).astype("float64")
+        actual_values = working[columns["actual_cum"]].replace(r"^\s*$", pd.NA, regex=True)
+        working["actual_cum_numeric"] = pd.to_numeric(actual_values, errors="coerce")
+        working["is_close_day_bool"] = _coerce_is_close_day(working["is_close_day"])
+    except Exception:  # noqa: BLE001 - visual source should fail closed.
+        return pd.DataFrame(columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+
+    working["target_cum"] = working["target_daily_numeric"].cumsum()
+    monthly_target = float(working["target_daily_numeric"].sum())
+    as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    selected_id = str(selected_scenario_id or "")
+
+    rows: list[dict[str, object]] = []
+    actual_rows = working.loc[
+        (working["date"] <= as_of_timestamp) & working["actual_cum_numeric"].notna()
+    ]
+    for _, day_row in actual_rows.iterrows():
+        rows.append(
+            _build_daily_forecast_row(
+                day_row=day_row,
+                scenario_id="확정 실적",
+                series_type="확정 실적",
+                line_group="actual",
+                daily_expected=float("nan"),
+                forecast_cum=day_row["actual_cum_numeric"],
+                monthly_target=monthly_target,
+                selected_id=selected_id,
+                as_of_timestamp=as_of_timestamp,
+                risk_level_label="",
+            )
+        )
+
+    scenario_lookup = scenario_df.set_index(scenario_df["scenario_id"].astype(str), drop=False)
+    for scenario_id in scenario_df["scenario_id"].astype(str).tolist():
+        forecast_result, strategy_result = run_selected_scenario_detail(
+            df,
+            as_of_date,
+            metric,
+            scenario_id,
+            config,
+        )
+        current_actual_cum = _as_float(forecast_result.get("current_actual_cum"))
+        if not math.isfinite(current_actual_cum):
+            continue
+
+        as_of_rows = working.loc[working["date"] == as_of_timestamp]
+        if not as_of_rows.empty:
+            rows.append(
+                _build_daily_forecast_row(
+                    day_row=as_of_rows.iloc[-1],
+                    scenario_id=scenario_id,
+                    series_type="시나리오 예상",
+                    line_group=scenario_id,
+                    daily_expected=0.0,
+                    forecast_cum=current_actual_cum,
+                    monthly_target=monthly_target,
+                    selected_id=selected_id,
+                    as_of_timestamp=as_of_timestamp,
+                    risk_level_label=_scenario_daily_risk_label(
+                        scenario_lookup,
+                        scenario_id,
+                    ),
+                )
+            )
+
+        expected_by_day = _build_scenario_expected_daily_map(
+            working,
+            forecast_result,
+            strategy_result,
+            as_of_timestamp,
+        )
+        cumulative = current_actual_cum
+        for _, day_row in working.loc[working["date"] > as_of_timestamp].iterrows():
+            day = pd.Timestamp(day_row["date"]).normalize()
+            daily_expected = expected_by_day.get(day, float("nan"))
+            if not math.isfinite(_as_float(daily_expected)):
+                continue
+            cumulative += float(daily_expected)
+            rows.append(
+                _build_daily_forecast_row(
+                    day_row=day_row,
+                    scenario_id=scenario_id,
+                    series_type="시나리오 예상",
+                    line_group=scenario_id,
+                    daily_expected=daily_expected,
+                    forecast_cum=cumulative,
+                    monthly_target=monthly_target,
+                    selected_id=selected_id,
+                    as_of_timestamp=as_of_timestamp,
+                    risk_level_label=_scenario_daily_risk_label(
+                        scenario_lookup,
+                        scenario_id,
+                    ),
+                )
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+    return pd.DataFrame(rows, columns=SCENARIO_DAILY_FORECAST_COLUMNS)
+
+
+def _build_scenario_expected_daily_map(
+    working: pd.DataFrame,
+    forecast_result: dict[str, object],
+    strategy_result: dict[str, object],
+    as_of_timestamp: pd.Timestamp,
+) -> dict[pd.Timestamp, float]:
+    allocation_by_day = _as_dataframe(strategy_result.get("allocation_by_day"))
+    if not allocation_by_day.empty and {"date", "expected_after_revision"}.issubset(
+        allocation_by_day.columns
+    ):
+        allocation = allocation_by_day.loc[:, ["date", "expected_after_revision"]].copy()
+        allocation["date"] = pd.to_datetime(allocation["date"], errors="coerce").dt.normalize()
+        allocation["expected_after_revision"] = pd.to_numeric(
+            allocation["expected_after_revision"],
+            errors="coerce",
+        )
+        allocation = allocation.dropna(subset=["date", "expected_after_revision"])
+        return {
+            pd.Timestamp(day).normalize(): float(value)
+            for day, value in allocation.groupby("date")["expected_after_revision"].sum().items()
+        }
+
+    expected_rate_by_day = forecast_result.get("expected_rate_by_day", {})
+    if not isinstance(expected_rate_by_day, dict):
+        return {}
+    normalized_rates = {
+        pd.Timestamp(day).normalize(): _as_float(rate)
+        for day, rate in expected_rate_by_day.items()
+    }
+    result: dict[pd.Timestamp, float] = {}
+    remaining_rows = working.loc[working["date"] > as_of_timestamp]
+    for _, day_row in remaining_rows.iterrows():
+        day = pd.Timestamp(day_row["date"]).normalize()
+        rate = normalized_rates.get(day, float("nan"))
+        target = _as_float(day_row.get("target_daily_numeric"))
+        if math.isfinite(rate) and math.isfinite(target):
+            result[day] = target * rate
+    return result
+
+
+def _build_daily_forecast_row(
+    *,
+    day_row: pd.Series,
+    scenario_id: str,
+    series_type: str,
+    line_group: str,
+    daily_expected: object,
+    forecast_cum: object,
+    monthly_target: float,
+    selected_id: str,
+    as_of_timestamp: pd.Timestamp,
+    risk_level_label: str,
+) -> dict[str, object]:
+    forecast_value = _as_float(forecast_cum)
+    target_cum = _as_float(day_row.get("target_cum"))
+    achievement_rate = safe_divide(forecast_value, monthly_target)
+    date_value = pd.Timestamp(day_row.get("date")).normalize()
+    is_close_day = bool(day_row.get("is_close_day_bool", False))
+
+    return {
+        "date": date_value,
+        "date_label": _format_chart_index(date_value),
+        "business_day_no": day_row.get("business_day_no", pd.NA),
+        "is_close_day": is_close_day,
+        "day_type": "마감일" if bool(is_close_day) else "일반일",
+        "close_type": day_row.get("close_type", ""),
+        "scenario_id": scenario_id,
+        "series_type": series_type,
+        "line_group": line_group,
+        "daily_expected": _as_float(daily_expected),
+        "forecast_cum": forecast_value,
+        "target_cum": target_cum,
+        "monthly_target": monthly_target,
+        "achievement_rate": achievement_rate,
+        "achievement_label": format_rate(achievement_rate),
+        "forecast_label": format_amount(forecast_value),
+        "target_cum_label": format_amount(target_cum),
+        "risk_level_label": risk_level_label,
+        "is_selected": series_type == "시나리오 예상" and scenario_id == selected_id,
+        "is_as_of_date": date_value == as_of_timestamp,
+    }
+
+
+def _scenario_daily_risk_label(
+    scenario_lookup: pd.DataFrame,
+    scenario_id: str,
+) -> str:
+    if scenario_id not in scenario_lookup.index:
+        return ""
+    return str(_localize_display_value(scenario_lookup.loc[scenario_id].get("risk_level", "")))
+
+
+def build_scenario_target_position_source(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> pd.DataFrame:
+    """Return scenario rows focused on target-line comparison."""
+    required = ("scenario_id", "monthly_target")
+    if scenario_df.empty or not set(required).issubset(scenario_df.columns):
+        return pd.DataFrame(
+            columns=[
+                "scenario_id",
+                "monthly_target",
+                "forecast_after_provision",
+                "target_variance",
+                "target_status_label",
+                "risk_level_label",
+                "is_selected",
+                "forecast_label",
+                "variance_label",
+            ]
+        )
+
+    value_column = (
+        "forecast_after_provision"
+        if "forecast_after_provision" in scenario_df.columns
+        else "forecast_amount"
+    )
+    available_columns = [
+        column
+        for column in (
+            "scenario_id",
+            "monthly_target",
+            value_column,
+            "target_variance",
+            "target_status",
+            "risk_level",
+        )
+        if column in scenario_df.columns
+    ]
+    source = scenario_df.loc[:, available_columns].copy()
+    if value_column != "forecast_after_provision":
+        source["forecast_after_provision"] = source[value_column]
+
+    for column in ("monthly_target", "forecast_after_provision", "target_variance"):
+        if column in source.columns:
+            source[column] = pd.to_numeric(source[column], errors="coerce")
+    if "target_variance" not in source.columns:
+        source["target_variance"] = (
+            source["forecast_after_provision"] - source["monthly_target"]
+        )
+
+    source["scenario_id"] = source["scenario_id"].astype(str)
+    source["target_status_label"] = source.get(
+        "target_status",
+        pd.Series(["UNKNOWN_TARGET_STATUS"] * len(source), index=source.index),
+    ).map(_localize_display_value)
+    source["risk_level_label"] = source.get(
+        "risk_level",
+        pd.Series(["N/A"] * len(source), index=source.index),
+    ).map(_localize_display_value)
+    source["is_selected"] = source["scenario_id"] == str(selected_scenario_id or "")
+    source["forecast_label"] = source["forecast_after_provision"].map(format_amount)
+    source["variance_label"] = source["target_variance"].map(_format_signed_amount)
+    source = source.dropna(subset=["forecast_after_provision", "monthly_target"])
+    return source.reset_index(drop=True)
+
+
+def build_scenario_heatmap_source(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> pd.DataFrame:
+    """Return scenario matrix rows with signed target variance."""
+    source = build_scenario_target_position_source(scenario_df, selected_scenario_id)
+    if source.empty:
+        return pd.DataFrame(
+            columns=[
+                "scenario_id",
+                "forecast_key",
+                "strategy_key",
+                "target_variance",
+                "variance_label",
+                "target_status_label",
+                "is_selected",
+            ]
+        )
+
+    rows: list[dict[str, object]] = []
+    for row in source.to_dict("records"):
+        scenario_id = str(row.get("scenario_id", ""))
+        forecast_key, strategy_key = _split_scenario_id(scenario_id)
+        rows.append(
+            {
+                "scenario_id": scenario_id,
+                "forecast_key": forecast_key,
+                "strategy_key": strategy_key,
+                "target_variance": row.get("target_variance"),
+                "variance_label": row.get("variance_label"),
+                "target_status_label": row.get("target_status_label"),
+                "is_selected": row.get("is_selected"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def build_remaining_target_chart_data(revised_targets_df: pd.DataFrame) -> pd.DataFrame:
     """Return remaining daily target values ready for Streamlit charts."""
     return _build_indexed_numeric_chart_data(
@@ -1518,6 +1998,97 @@ def build_remaining_target_chart_data(revised_targets_df: pd.DataFrame) -> pd.Da
             "expected_after_revision",
         ),
     )
+
+
+def build_remaining_target_daily_source(revised_targets_df: pd.DataFrame) -> pd.DataFrame:
+    """Return remaining-day rows with labels for intuitive target allocation charts."""
+    if revised_targets_df.empty or "date" not in revised_targets_df.columns:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "date_label",
+                "day_type",
+                "close_type",
+                "original_target",
+                "uplift",
+                "revised_target",
+                "cap_target",
+                "expected_after_revision",
+                "cap_exceeded",
+            ]
+        )
+
+    available_columns = [
+        column
+        for column in (
+            "date",
+            "day_name",
+            "is_close_day",
+            "close_type",
+            "original_target",
+            "uplift",
+            "revised_target",
+            "cap_target",
+            "expected_after_revision",
+            "cap_exceeded",
+        )
+        if column in revised_targets_df.columns
+    ]
+    source = revised_targets_df.loc[:, available_columns].copy()
+    for column in (
+        "original_target",
+        "uplift",
+        "revised_target",
+        "cap_target",
+        "expected_after_revision",
+    ):
+        if column in source.columns:
+            source[column] = pd.to_numeric(source[column], errors="coerce")
+        else:
+            source[column] = pd.NA
+    if "cap_exceeded" not in source.columns:
+        source["cap_exceeded"] = False
+    if "close_type" not in source.columns:
+        source["close_type"] = ""
+
+    source["date_label"] = source["date"].map(_format_chart_index)
+    if "is_close_day" in source.columns:
+        source["day_type"] = source["is_close_day"].map(
+            lambda value: "마감일" if not _is_missing(value) and bool(value) else "일반일"
+        )
+    else:
+        source["day_type"] = "잔여일"
+    return source.reset_index(drop=True)
+
+
+def build_remaining_target_stack_source(revised_targets_df: pd.DataFrame) -> pd.DataFrame:
+    """Return long-form existing target and uplift rows for stacked bars."""
+    daily = build_remaining_target_daily_source(revised_targets_df)
+    if daily.empty:
+        return pd.DataFrame(columns=["date_label", "target_part", "value"])
+
+    stack_source = daily.melt(
+        id_vars=[
+            "date",
+            "date_label",
+            "day_type",
+            "close_type",
+            "revised_target",
+            "cap_target",
+            "expected_after_revision",
+            "cap_exceeded",
+        ],
+        value_vars=["original_target", "uplift"],
+        var_name="target_part",
+        value_name="value",
+    )
+    stack_source["target_part"] = stack_source["target_part"].map(
+        {
+            "original_target": "기존 일 목표",
+            "uplift": "추가 배분 목표",
+        }
+    )
+    return stack_source.dropna(subset=["value"]).reset_index(drop=True)
 
 
 def build_strategy_level_table(
@@ -1651,6 +2222,140 @@ def build_visual_reading_guide(guide_key: str) -> dict[str, object]:
         "steps": tuple(guide.get("steps", ())),
         "decision": guide.get("decision", ""),
     }
+
+
+def build_visual_headline(
+    selected_row: pd.Series,
+    validation_result: dict[str, Any],
+    next_close_result: dict[str, Any],
+) -> str:
+    """Return the first sentence users should read before the charts."""
+    _ = validation_result
+    target_status = str(selected_row.get("target_status", "UNKNOWN_TARGET_STATUS"))
+    target_variance = _as_float(selected_row.get("target_variance"))
+    surplus = _as_float(selected_row.get("surplus_to_target"))
+    next_close_sentence = _visual_next_close_sentence(next_close_result)
+
+    if target_status == "UNDER_TARGET" or (
+        math.isfinite(target_variance) and target_variance < 0
+    ):
+        shortage = abs(target_variance) if math.isfinite(target_variance) else selected_row.get("gap_to_target")
+        return (
+            f"결론: 목표선보다 {format_amount(shortage)} 부족할 가능성이 큽니다. "
+            "먼저 전략 반영 후 예상이 공식 월 목표선까지 회복되는지 보고, "
+            f"그다음 잔여 일자별 추가 배분이 감당 가능한지 확인하세요. {next_close_sentence}"
+        )
+
+    if target_status == "OVER_TARGET" or (
+        math.isfinite(target_variance) and target_variance > 0
+    ):
+        surplus_amount = surplus if math.isfinite(surplus) and surplus > 0 else target_variance
+        return (
+            f"결론: 목표선보다 {format_amount(surplus_amount)} 여유가 예상됩니다. "
+            "초과분을 안전버퍼로 남길지, Stretch 목표로 전환할지 차트에서 확인하세요. "
+            f"{next_close_sentence}"
+        )
+
+    return (
+        "결론: 목표선 근처의 유지/모니터링 구간입니다. "
+        "시각화에서는 예측모델별 흔들림과 다음 마감 누적선을 함께 확인하세요. "
+        f"{next_close_sentence}"
+    )
+
+
+def build_visual_decision_summary(
+    selected_row: pd.Series,
+    validation_result: dict[str, Any],
+    next_close_result: dict[str, Any],
+) -> pd.DataFrame:
+    """Return chart interpretation rows in a fixed reading order."""
+    target_status = selected_row.get("target_status", "UNKNOWN_TARGET_STATUS")
+    risk_level = selected_row.get("risk_level", "N/A")
+    operation_mode = _operation_mode_label(target_status)
+    monthly_target = validation_result.get("monthly_target")
+    forecast_after = selected_row.get("forecast_after_provision")
+    target_variance = selected_row.get("target_variance")
+    next_close_date = next_close_result.get("next_close_date")
+    next_close_required = next_close_result.get("required_to_recover_next_close_cum")
+
+    return pd.DataFrame(
+        [
+            {
+                "확인 순서": "1",
+                "볼 것": "목표 판정",
+                "현재 값": (
+                    f"{_localize_display_value(target_status)} / "
+                    f"위험 {_localize_display_value(risk_level)}"
+                ),
+                "해석": _visual_status_sentence(target_status, operation_mode),
+            },
+            {
+                "확인 순서": "2",
+                "볼 것": "목표선 대비 예상 실적",
+                "현재 값": (
+                    f"{format_amount(forecast_after)} / "
+                    f"목표 {format_amount(monthly_target)}"
+                ),
+                "해석": "막대가 목표선보다 낮으면 잔여 목표 보정이 필요하고, 높으면 초과분 관리가 핵심입니다.",
+            },
+            {
+                "확인 순서": "3",
+                "볼 것": "목표 대비 차이",
+                "현재 값": _format_signed_amount(target_variance),
+                "해석": _visual_variance_sentence(target_variance),
+            },
+            {
+                "확인 순서": "4",
+                "볼 것": "다음 마감선",
+                "현재 값": (
+                    f"{_format_date(next_close_date)} / "
+                    f"{format_amount(next_close_required)}"
+                ),
+                "해석": _visual_next_close_sentence(next_close_result),
+            },
+        ]
+    )
+
+
+def _visual_status_sentence(target_status: object, operation_mode: object) -> str:
+    status = str(target_status)
+    mode = str(operation_mode)
+    if status == "UNDER_TARGET":
+        return f"{mode} 상태입니다. 시나리오별 예상 탭에서 어떤 F/P 조합이 부족분을 줄이는지 보세요."
+    if status == "OVER_TARGET":
+        return f"{mode} 상태입니다. 초과분을 버퍼로 둘지, 상향 목표로 전환할지 전략 수준 탭에서 보세요."
+    if status == "ON_TARGET":
+        return f"{mode} 상태입니다. 목표선은 맞지만 마감차수 흐름이 흔들리는지 함께 확인하세요."
+    return "목표 판정에 필요한 값이 부족합니다. 입력값 점검 결과를 먼저 확인하세요."
+
+
+def _visual_variance_sentence(value: object) -> str:
+    number = _as_float(value)
+    if not math.isfinite(number):
+        return "목표 대비 차이를 계산할 수 없습니다. 선택 시나리오 상세 값을 확인하세요."
+    if number < 0:
+        return f"월말 기준 {format_amount(abs(number))}를 더 채워야 목표선에 도달합니다."
+    if number > 0:
+        return f"월말 기준 {format_amount(number)}가 목표선 위에 있어 버퍼 또는 Stretch 후보입니다."
+    return "월말 예상이 공식 월 목표와 거의 같습니다. 남은 기간의 변동 리스크를 봅니다."
+
+
+def _visual_next_close_sentence(next_close_result: dict[str, Any]) -> str:
+    next_close_date = next_close_result.get("next_close_date")
+    required = _as_float(next_close_result.get("required_to_recover_next_close_cum"))
+    if _is_missing(next_close_date) or not math.isfinite(required):
+        return "다음 마감 기준선은 계산 가능한 데이터가 있을 때 표시됩니다."
+    if required <= 0:
+        return f"{_format_date(next_close_date)}까지 다음 마감 기준선에 대한 추가 회복 부담은 없습니다."
+    return f"{_format_date(next_close_date)}까지 누적 기준으로 최소 {format_amount(required)}을 더 확보해야 합니다."
+
+
+def _format_signed_amount(value: object) -> str:
+    number = _as_float(value)
+    if not math.isfinite(number):
+        return "계산 불가"
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:.1f}억 원"
 
 
 def build_forecast_definition_df() -> pd.DataFrame:
@@ -2015,6 +2720,103 @@ def build_excel_report_bytes(
         overwrite=True,
     )
     return saved_path.read_bytes(), report_name
+
+
+def load_forecast_history_for_app(path: str | Path | None = None) -> pd.DataFrame:
+    """Load forecast history for the UI, preserving optional future columns."""
+    history_path = (
+        Path(path)
+        if path is not None
+        else _history_storage_path(history_schema.FORECAST_HISTORY)
+    )
+    columns = list(history_schema.FORECAST_HISTORY_COLUMNS)
+    if not history_path.exists() or history_path.stat().st_size == 0:
+        return pd.DataFrame(columns=columns)
+
+    loaded = pd.read_csv(history_path, encoding="utf-8-sig")
+    history_schema.validate_required_columns(loaded.columns, history_schema.FORECAST_HISTORY)
+    optional_columns = [column for column in loaded.columns if column not in columns]
+    return loaded.loc[:, [*columns, *optional_columns]].copy()
+
+
+def load_history_tables_for_app(
+    forecast_history_path: str | Path | None = None,
+    final_actuals_path: str | Path | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Load history tables without failing when either storage file is absent."""
+    final_path = (
+        Path(final_actuals_path)
+        if final_actuals_path is not None
+        else _history_storage_path(history_schema.FINAL_ACTUALS)
+    )
+    return {
+        "forecast_history": load_forecast_history_for_app(forecast_history_path),
+        "final_actuals": load_final_actuals(final_path),
+    }
+
+
+def save_forecast_history_snapshot(
+    scenario_df: pd.DataFrame,
+    as_of_date: object,
+    metric: str,
+    path: str | Path | None = None,
+) -> pd.DataFrame:
+    """Save the current scenario grid as one forecast history snapshot."""
+    target_path = (
+        Path(path)
+        if path is not None
+        else _history_storage_path(history_schema.FORECAST_HISTORY)
+    )
+    run_context = {
+        "run_id": None,
+        "run_datetime": pd.Timestamp.now(tz=APP_TIMEZONE),
+        "target_month": pd.Timestamp(as_of_date).strftime("%Y-%m"),
+        "as_of_date": pd.Timestamp(as_of_date).date().isoformat(),
+        "metric": metric,
+    }
+    rows = build_forecast_history_rows(scenario_df, run_context)
+    return append_forecast_history(rows, target_path)
+
+
+def build_backtest_insights(
+    forecast_history: pd.DataFrame,
+    final_actuals: pd.DataFrame,
+    model_summary: pd.DataFrame,
+) -> list[str]:
+    """Return concise interpretation messages for the Backtest tab."""
+    if forecast_history.empty:
+        return ["저장된 forecast_history가 아직 없습니다. 계산 후 예측 이력 저장을 누르면 Backtest 표본이 쌓입니다."]
+    if final_actuals.empty:
+        return ["final_actuals가 아직 없어 예측값과 확정 실적의 오차율은 계산하지 않았습니다."]
+    if model_summary.empty:
+        return ["forecast_history와 final_actuals의 target_month/metric이 아직 매칭되지 않아 Backtest 요약을 만들 수 없습니다."]
+
+    ranked = model_summary.copy()
+    ranked["mean_error_rate"] = pd.to_numeric(ranked["mean_error_rate"], errors="coerce")
+    ranked = ranked.loc[ranked["mean_error_rate"].notna()].sort_values(
+        ["mean_error_rate", "forecast_model"],
+        kind="mergesort",
+    )
+    if ranked.empty:
+        return ["Backtest 표본은 있지만 유효한 평균 오차율이 없어 모델 우열을 판단하지 않았습니다."]
+
+    best = ranked.iloc[0]
+    bias = _as_float(best.get("bias"))
+    bias_message = "bias는 거의 중립입니다."
+    if math.isfinite(bias) and bias > 0:
+        bias_message = "bias가 양수라 평균적으로 과대 예측 경향이 있습니다."
+    elif math.isfinite(bias) and bias < 0:
+        bias_message = "bias가 음수라 평균적으로 과소 예측 경향이 있습니다."
+
+    return [
+        f"현재 표본 기준 최저 평균 오차율 모델은 {best.get('forecast_model')}이며 평균 오차율은 {format_rate(best.get('mean_error_rate'))}입니다.",
+        bias_message,
+        "동적 가중 예측은 이 모델별 오차율과 bias가 충분히 누적된 뒤 적용 후보로 판단할 수 있습니다.",
+    ]
+
+
+def _history_storage_path(schema_name: str) -> Path:
+    return history_schema.get_storage_paths(repo_root=REPO_ROOT)[schema_name]
 
 
 def format_amount(value: object) -> str:
@@ -2547,8 +3349,30 @@ def build_input_template_bytes() -> bytes:
 def build_historical_input_template_bytes() -> bytes:
     return _build_template_workbook_bytes(
         "HistoricalInputTemplate",
-        HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS,
+        _load_historical_input_template_sample_rows(),
     )
+
+
+def _load_historical_input_template_sample_rows() -> tuple[tuple[object, ...], ...]:
+    try:
+        sample_df = pd.read_csv(HISTORICAL_SAMPLE_INPUT_PATH, encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError, pd.errors.ParserError):
+        return HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS
+
+    missing_columns = [
+        column for column in INPUT_TEMPLATE_HEADERS if column not in sample_df.columns
+    ]
+    if missing_columns:
+        return HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS
+
+    rows: list[tuple[object, ...]] = []
+    for row in sample_df.loc[:, list(INPUT_TEMPLATE_HEADERS)].itertuples(
+        index=False,
+        name=None,
+    ):
+        rows.append(tuple(None if pd.isna(value) else value for value in row))
+
+    return tuple(rows) or HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS
 
 
 def _render_input_template_download() -> None:
@@ -2613,12 +3437,20 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
         try:
             if uploaded_file is not None:
                 st.session_state["use_historical_sample_input"] = False
-                historical_df = _load_uploaded_input(uploaded_file, sort_by="date")
+                historical_df = _load_uploaded_input(
+                    uploaded_file,
+                    sort_by="date",
+                    strict_business_day_no=False,
+                )
                 st.success(f"과거 월 데이터 {len(historical_df)}행을 불러왔습니다.")
                 return historical_df, uploaded_file.name
 
             if st.session_state.get("use_historical_sample_input", False):
-                historical_df = load_input(HISTORICAL_SAMPLE_INPUT_PATH, sort_by="date")
+                historical_df = load_input(
+                    HISTORICAL_SAMPLE_INPUT_PATH,
+                    sort_by="date",
+                    strict_business_day_no=False,
+                )
                 st.success(f"과거 샘플 데이터 {len(historical_df)}행을 불러왔습니다.")
                 return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
         except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
@@ -2912,12 +3744,23 @@ def _render_body(
     next_close_result: dict[str, Any],
     validation_result: dict[str, Any],
     historical_context: dict[str, object],
+    metric: str,
+    as_of_date: object,
+    df: pd.DataFrame,
+    config: dict[str, Any],
 ) -> None:
     _render_visuals(
         scenario_df,
         selected_scenario_id,
+        selected_row,
         _as_dataframe(revised_targets_df),
         close_cycle_df,
+        next_close_result,
+        validation_result,
+        metric,
+        as_of_date,
+        df,
+        config,
     )
     _render_historical_context_panel(historical_context)
 
@@ -3016,13 +3859,26 @@ def _render_target_or_strategy_table(
 def _render_visuals(
     scenario_df: pd.DataFrame,
     selected_scenario_id: str,
+    selected_row: pd.Series,
     revised_targets_df: pd.DataFrame,
     close_cycle_df: pd.DataFrame,
+    next_close_result: dict[str, Any],
+    validation_result: dict[str, Any],
+    metric: str,
+    as_of_date: object,
+    df: pd.DataFrame,
+    config: dict[str, Any],
 ) -> None:
     st.subheader("시각화")
-    st.caption("그래프는 기준선 확인 → 차이 확인 → 실행 판단 순서로 읽습니다.")
-    scenario_tab, target_tab, close_cycle_tab = st.tabs(
-        ["시나리오별 예상", "잔여 목표/전략 수준", "마감차수 흐름"]
+    st.caption("각 탭은 결론 확인 → 기준선 확인 → 차이 확인 → 실행 판단 순서로 읽습니다.")
+    _render_visual_decision_panel(
+        selected_scenario_id,
+        selected_row,
+        validation_result,
+        next_close_result,
+    )
+    scenario_tab, target_tab, close_cycle_tab, history_tab = st.tabs(
+        ["시나리오별 예상", "잔여 목표/전략 수준", "마감차수 흐름", HISTORY_TAB_LABEL]
     )
 
     with scenario_tab:
@@ -3030,41 +3886,49 @@ def _render_visuals(
         if scenario_chart_data.empty:
             st.info("시나리오 차트 데이터 없음")
         else:
-            scenario_amount_columns = _available_chart_columns(
-                scenario_chart_data,
-                ("monthly_target", "forecast_amount", "forecast_after_provision", "revised_monthly_target"),
+            _render_visual_metric_definitions(
+                ("daily_forecast_cum", "daily_target_cum", "daily_achievement_rate")
             )
-            scenario_status_columns = _available_chart_columns(
-                scenario_chart_data,
-                ("target_variance", "gap_to_target", "surplus_to_target", "required_uplift"),
+            _render_chart_reading_guide("scenario_daily_progress")
+            daily_forecast_source = build_scenario_daily_forecast_source(
+                df,
+                scenario_df,
+                as_of_date,
+                metric,
+                config,
+                selected_scenario_id,
+            )
+            _render_scenario_daily_forecast_chart(
+                daily_forecast_source,
+                selected_scenario_id,
             )
             _render_visual_metric_definitions(
-                (*scenario_amount_columns, *scenario_status_columns)
+                ("monthly_target", "forecast_after_provision", "target_variance")
             )
-            if scenario_amount_columns:
-                _render_chart_reading_guide("scenario_amount")
-                _render_grouped_bar_chart(scenario_chart_data, scenario_amount_columns)
-            if scenario_status_columns:
-                _render_chart_reading_guide("scenario_status")
-                _render_grouped_bar_chart(scenario_chart_data, scenario_status_columns)
+            _render_chart_reading_guide("scenario_target_position")
+            _render_scenario_target_position_chart(scenario_df, selected_scenario_id)
+            _render_chart_reading_guide("scenario_gap_position")
+            _render_scenario_gap_chart(scenario_df, selected_scenario_id)
+            _render_chart_reading_guide("scenario_heatmap")
+            _render_scenario_heatmap(scenario_df, selected_scenario_id)
 
-        value_matrix = build_scenario_value_matrix(scenario_df)
-        _render_chart_reading_guide("scenario_matrix")
-        st.dataframe(value_matrix.map(format_amount), use_container_width=True)
+            with st.expander("시나리오 숫자표", expanded=False):
+                value_matrix = build_scenario_value_matrix(scenario_df)
+                st.dataframe(value_matrix.map(format_amount), use_container_width=True)
 
     with target_tab:
         st.caption(f"선택 시나리오: {selected_scenario_id}")
-        target_bar_columns = ("original_target", "uplift", "revised_target")
-        target_line_columns = ("cap_target", "expected_after_revision")
         target_chart_data = build_remaining_target_chart_data(revised_targets_df)
         if target_chart_data.empty:
             _render_strategy_level_visuals(scenario_df, selected_scenario_id)
         else:
-            _render_visual_metric_definitions((*target_bar_columns, *target_line_columns))
-            _render_chart_reading_guide("target_allocation")
-            _render_grouped_bar_chart(target_chart_data, target_bar_columns)
-            _render_chart_reading_guide("target_cap")
-            _render_line_chart(target_chart_data, target_line_columns)
+            _render_visual_metric_definitions(
+                ("original_target", "uplift", "revised_target", "cap_target")
+            )
+            _render_chart_reading_guide("target_uplift")
+            _render_remaining_uplift_chart(revised_targets_df)
+            _render_chart_reading_guide("target_stack")
+            _render_remaining_target_stack_chart(revised_targets_df)
 
     with close_cycle_tab:
         close_cycle_bar_columns = ("target_sum", "actual_sum")
@@ -3080,6 +3944,360 @@ def _render_visuals(
             _render_grouped_bar_chart(close_cycle_chart_data, close_cycle_bar_columns)
             _render_chart_reading_guide("close_cycle_rate")
             _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
+
+    with history_tab:
+        _render_forecast_history_backtest_tab(scenario_df, metric, as_of_date)
+
+
+def _render_visual_decision_panel(
+    selected_scenario_id: str,
+    selected_row: pd.Series,
+    validation_result: dict[str, Any],
+    next_close_result: dict[str, Any],
+) -> None:
+    st.markdown("**결론 먼저 보기**")
+    st.info(build_visual_headline(selected_row, validation_result, next_close_result))
+
+    cols = st.columns(4)
+    cols[0].metric("선택 시나리오", selected_scenario_id)
+    cols[1].metric(
+        "전략 반영 후 예상",
+        format_amount(selected_row.get("forecast_after_provision")),
+        delta=_format_signed_amount(selected_row.get("target_variance")),
+        help="delta는 공식 월 목표 대비 차이입니다.",
+    )
+    cols[2].metric("목표 상태", _localize_display_value(selected_row.get("target_status")))
+    cols[3].metric("위험등급", _localize_display_value(selected_row.get("risk_level", "N/A")))
+
+    with st.expander("차트 해석 순서", expanded=True):
+        st.dataframe(
+            build_visual_decision_summary(
+                selected_row,
+                validation_result,
+                next_close_result,
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+def _render_forecast_history_backtest_tab(
+    scenario_df: pd.DataFrame,
+    metric: str,
+    as_of_date: object,
+) -> None:
+    st.subheader(HISTORY_TAB_LABEL)
+    st.caption("현재 계산 결과를 저장하고, 월마감 확정 실적과 매칭되는 이력은 Backtest로 비교합니다.")
+
+    save_col, path_col = st.columns([1, 3])
+    if save_col.button("예측 이력 저장", key=f"save_forecast_history_{metric}_{pd.Timestamp(as_of_date).date()}"):
+        try:
+            saved_history = save_forecast_history_snapshot(scenario_df, as_of_date, metric)
+            st.success(f"예측 이력을 저장했습니다. forecast_history {len(saved_history)}건")
+        except Exception as exc:  # noqa: BLE001 - Streamlit should stay usable.
+            st.warning(f"예측 이력을 저장하지 못했습니다: {exc}")
+
+    path_col.caption(
+        f"forecast_history: {_history_storage_path(history_schema.FORECAST_HISTORY)} | "
+        f"final_actuals: {_history_storage_path(history_schema.FINAL_ACTUALS)}"
+    )
+
+    tables = _load_history_tables_for_ui()
+    forecast_history = tables["forecast_history"]
+    final_actuals = tables["final_actuals"]
+    focused_history = _focus_history_for_current_context(
+        forecast_history,
+        metric,
+        as_of_date,
+    )
+
+    st.markdown("**forecast_history 테이블**")
+    if forecast_history.empty:
+        st.info("forecast_history 파일이 없거나 저장된 예측 이력이 없습니다. 예측 이력 저장 후 이 표에 누적됩니다.")
+    else:
+        st.dataframe(
+            _format_display_df(forecast_history.tail(200)),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.markdown("**final_actuals 테이블**")
+    if final_actuals.empty:
+        st.info("final_actuals가 아직 없습니다. 월마감 확정 실적이 저장되면 Backtest 오차율을 계산합니다.")
+    else:
+        st.dataframe(
+            _format_display_df(final_actuals.tail(200)),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    backtest_df = build_backtest_dataset(forecast_history, final_actuals)
+    model_summary = summarize_by_forecast_model(backtest_df)
+
+    st.markdown("**모델별 평균 오차율 / bias**")
+    if model_summary.empty:
+        st.info("예측 이력과 확정 실적의 대상 월/지표가 아직 매칭되지 않아 모델별 평균 오차율과 bias를 표시할 수 없습니다.")
+    else:
+        st.dataframe(
+            _format_display_df(model_summary),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    _render_forecast_history_trend_chart(focused_history)
+    _render_target_status_distribution(focused_history)
+    _render_gap_surplus_trend_chart(focused_history)
+    _render_optional_weighted_forecast(focused_history)
+    _render_optional_confidence_band(focused_history)
+
+    st.markdown("**Insight**")
+    for message in build_backtest_insights(forecast_history, final_actuals, model_summary):
+        st.write(f"- {message}")
+
+
+def _load_history_tables_for_ui() -> dict[str, pd.DataFrame]:
+    try:
+        return load_history_tables_for_app()
+    except Exception as exc:  # noqa: BLE001 - keep the app usable if storage is corrupt.
+        st.warning(f"예측 이력/Backtest 저장소를 불러오지 못했습니다: {exc}")
+        return {
+            "forecast_history": pd.DataFrame(columns=history_schema.FORECAST_HISTORY_COLUMNS),
+            "final_actuals": pd.DataFrame(columns=history_schema.FINAL_ACTUALS_COLUMNS),
+        }
+
+
+def _focus_history_for_current_context(
+    forecast_history: pd.DataFrame,
+    metric: str,
+    as_of_date: object,
+) -> pd.DataFrame:
+    if forecast_history.empty:
+        return forecast_history
+
+    focused = forecast_history.copy()
+    if "metric" in focused.columns:
+        metric_rows = focused.loc[focused["metric"].astype(str) == str(metric)]
+        if not metric_rows.empty:
+            focused = metric_rows
+
+    if "target_month" in focused.columns:
+        target_month = pd.Timestamp(as_of_date).strftime("%Y-%m")
+        month_rows = focused.loc[focused["target_month"].astype(str) == target_month]
+        if not month_rows.empty:
+            focused = month_rows
+    return focused.reset_index(drop=True)
+
+
+def _render_forecast_history_trend_chart(forecast_history: pd.DataFrame) -> None:
+    st.markdown("**예측 추이 그래프**")
+    source = _history_long_metric_source(forecast_history, ("forecast_amount",))
+    if source.empty:
+        st.info("예측 추이 그래프를 만들 forecast_amount 이력이 없습니다.")
+        return
+
+    chart = (
+        alt.Chart(source)
+        .mark_line(point=True, strokeWidth=2.4)
+        .encode(
+            x=alt.X("as_of_date:T", title="기준일"),
+            y=alt.Y(
+                "value:Q",
+                title="예측값",
+                scale=_auto_value_scale(source),
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.Color("forecast_model:N", title="예측 모델"),
+            tooltip=[
+                alt.Tooltip("as_of_date:T", title="기준일"),
+                alt.Tooltip("forecast_model:N", title="예측 모델"),
+                alt.Tooltip("value:Q", title="예측값", format=chart_value_format("억원")),
+            ],
+        )
+        .properties(height=300)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_target_status_distribution(forecast_history: pd.DataFrame) -> None:
+    st.markdown("**target_status 분포**")
+    if forecast_history.empty or "target_status" not in forecast_history.columns:
+        st.info("target_status 분포를 만들 예측 이력이 없습니다.")
+        return
+
+    source = (
+        forecast_history["target_status"]
+        .fillna("UNKNOWN")
+        .astype(str)
+        .value_counts()
+        .rename_axis("target_status")
+        .reset_index(name="count")
+    )
+    source["target_status_label"] = source["target_status"].map(_localize_display_value)
+    chart = (
+        alt.Chart(source)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+        .encode(
+            x=alt.X("target_status_label:N", title="목표 상태", sort=None),
+            y=alt.Y("count:Q", title="건수", axis=alt.Axis(format="d")),
+            color=alt.Color("target_status_label:N", title="목표 상태"),
+            tooltip=[
+                alt.Tooltip("target_status_label:N", title="목표 상태"),
+                alt.Tooltip("count:Q", title="건수", format="d"),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_gap_surplus_trend_chart(forecast_history: pd.DataFrame) -> None:
+    st.markdown("**gap_to_target / surplus_to_target 추이**")
+    source = _history_long_metric_source(
+        forecast_history,
+        ("gap_to_target", "surplus_to_target"),
+    )
+    if source.empty:
+        st.info("gap_to_target / surplus_to_target 추이를 만들 이력이 없습니다.")
+        return
+
+    chart = (
+        alt.Chart(source)
+        .mark_line(point=True, strokeWidth=2.3)
+        .encode(
+            x=alt.X("as_of_date:T", title="기준일"),
+            y=alt.Y(
+                "value:Q",
+                title="금액",
+                scale=_auto_value_scale(source),
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.Color("metric_label:N", title="항목"),
+            strokeDash=alt.StrokeDash("forecast_model:N", title="예측 모델"),
+            tooltip=[
+                alt.Tooltip("as_of_date:T", title="기준일"),
+                alt.Tooltip("forecast_model:N", title="예측 모델"),
+                alt.Tooltip("metric_label:N", title="항목"),
+                alt.Tooltip("value:Q", title="금액", format=chart_value_format("억원")),
+            ],
+        )
+        .properties(height=300)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_optional_weighted_forecast(forecast_history: pd.DataFrame) -> None:
+    st.markdown("**Weighted Forecast**")
+    weighted_columns = _optional_columns_by_token(
+        forecast_history,
+        WEIGHTED_FORECAST_COLUMN_TOKENS,
+    )
+    if not weighted_columns:
+        st.caption("Weighted Forecast 데이터가 아직 없습니다.")
+        return
+
+    display_columns = _available_columns(
+        forecast_history,
+        ("target_month", "as_of_date", "metric", *weighted_columns),
+    )
+    weighted_rows = forecast_history.loc[:, display_columns].dropna(
+        how="all",
+        subset=weighted_columns,
+    )
+    if weighted_rows.empty:
+        st.caption("Weighted Forecast 컬럼은 있지만 표시할 값이 없습니다.")
+        return
+    st.dataframe(_format_display_df(weighted_rows.tail(100)), hide_index=True, use_container_width=True)
+
+
+def _render_optional_confidence_band(forecast_history: pd.DataFrame) -> None:
+    st.markdown("**Confidence Band**")
+    band_pair = _confidence_band_pair(forecast_history)
+    if band_pair is None:
+        st.caption("Confidence Band 데이터가 아직 없습니다.")
+        return
+
+    lower_column, upper_column = band_pair
+    display_columns = _available_columns(
+        forecast_history,
+        ("target_month", "as_of_date", "metric", "forecast_model", "forecast_amount", lower_column, upper_column),
+    )
+    band_rows = forecast_history.loc[:, display_columns].dropna(
+        how="all",
+        subset=[lower_column, upper_column],
+    )
+    if band_rows.empty:
+        st.caption("Confidence Band 컬럼은 있지만 표시할 값이 없습니다.")
+        return
+    st.dataframe(_format_display_df(band_rows.tail(100)), hide_index=True, use_container_width=True)
+
+
+def _history_long_metric_source(
+    forecast_history: pd.DataFrame,
+    value_columns: tuple[str, ...],
+) -> pd.DataFrame:
+    if forecast_history.empty or "as_of_date" not in forecast_history.columns:
+        return pd.DataFrame()
+
+    available_value_columns = [
+        column
+        for column in value_columns
+        if column in forecast_history.columns
+    ]
+    if not available_value_columns:
+        return pd.DataFrame()
+
+    working = forecast_history.copy()
+    working["as_of_date"] = pd.to_datetime(working["as_of_date"], errors="coerce")
+    if "forecast_model" not in working.columns:
+        working["forecast_model"] = "ALL"
+    for column in available_value_columns:
+        working[column] = pd.to_numeric(working[column], errors="coerce")
+
+    grouped = (
+        working.dropna(subset=["as_of_date"])
+        .groupby(["as_of_date", "forecast_model"], dropna=False)[available_value_columns]
+        .mean()
+        .reset_index()
+    )
+    source = grouped.melt(
+        id_vars=["as_of_date", "forecast_model"],
+        value_vars=available_value_columns,
+        var_name="metric",
+        value_name="value",
+    ).dropna(subset=["value"])
+    source["metric_label"] = source["metric"].map(_display_column_label)
+    return source.reset_index(drop=True)
+
+
+def _optional_columns_by_token(
+    df: pd.DataFrame,
+    tokens: tuple[str, ...],
+) -> list[str]:
+    if df.empty:
+        return []
+    lower_tokens = tuple(token.lower() for token in tokens)
+    return [
+        column
+        for column in df.columns
+        if any(token in str(column).lower() for token in lower_tokens)
+    ]
+
+
+def _confidence_band_pair(df: pd.DataFrame) -> tuple[str, str] | None:
+    if df.empty:
+        return None
+    columns = set(df.columns)
+    for lower_column, upper_column in CONFIDENCE_BAND_COLUMN_PAIRS:
+        if lower_column in columns and upper_column in columns:
+            return lower_column, upper_column
+    return None
+
+
+def _available_columns(
+    df: pd.DataFrame,
+    preferred_columns: tuple[str, ...],
+) -> list[str]:
+    return [column for column in preferred_columns if column in df.columns]
 
 
 def _render_historical_context_panel(historical_context: dict[str, object]) -> None:
@@ -3255,42 +4473,565 @@ def _render_strategy_level_visuals(
     scenario_df: pd.DataFrame,
     selected_scenario_id: str,
 ) -> None:
-    strategy_chart_data = build_strategy_level_chart_data(
-        scenario_df,
-        selected_scenario_id,
-    )
-    if strategy_chart_data.empty:
-        st.info("운영전략별 목표 수준 차트 데이터 없음")
+    strategy_table = build_strategy_level_table(scenario_df, selected_scenario_id)
+    if strategy_table.empty:
+        st.info("운영전략별 목표 수준 데이터 없음")
         return
 
-    strategy_amount_columns = _available_chart_columns(
-        strategy_chart_data,
-        ("monthly_target", "forecast_amount", "revised_monthly_target"),
-    )
-    strategy_buffer_columns = _available_chart_columns(
-        strategy_chart_data,
-        (
-            "target_variance",
-            "gap_to_target",
-            "surplus_to_target",
-            "stretch_uplift",
-            "remaining_surplus_buffer",
-            "minimum_remaining_to_hit_target",
-            "relief_amount",
-        ),
-    )
     _render_visual_metric_definitions(
-        (*strategy_amount_columns, *strategy_buffer_columns)
+        ("monthly_target", "forecast_after_provision", "target_variance")
     )
-    if strategy_amount_columns:
-        _render_chart_reading_guide("strategy_amount")
-        _render_grouped_bar_chart(strategy_chart_data, strategy_amount_columns)
-    if strategy_buffer_columns:
-        _render_chart_reading_guide("strategy_buffer")
-        _render_grouped_bar_chart(strategy_chart_data, strategy_buffer_columns)
+    _render_chart_reading_guide("scenario_target_position")
+    _render_scenario_target_position_chart(strategy_table, selected_scenario_id)
+    _render_chart_reading_guide("scenario_gap_position")
+    _render_scenario_gap_chart(strategy_table, selected_scenario_id)
 
-    strategy_table = build_strategy_level_table(scenario_df, selected_scenario_id)
     st.dataframe(_format_display_df(strategy_table), use_container_width=True)
+
+
+def _render_scenario_daily_forecast_chart(
+    source: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> None:
+    if source.empty:
+        st.info("일자별 시나리오 누적 전망 데이터 없음")
+        return
+
+    chart_source = source.copy()
+    chart_source["date"] = pd.to_datetime(chart_source["date"], errors="coerce")
+    chart_source = chart_source.dropna(subset=["date", "forecast_cum"])
+    if chart_source.empty:
+        st.info("일자별 시나리오 누적 전망 데이터 없음")
+        return
+
+    target_source = (
+        chart_source.loc[:, ["date", "date_label", "target_cum", "monthly_target"]]
+        .drop_duplicates("date")
+        .sort_values("date")
+    )
+    actual_source = chart_source.loc[chart_source["series_type"] == "확정 실적"]
+    forecast_source = chart_source.loc[chart_source["series_type"] == "시나리오 예상"]
+    close_day_source = target_source.merge(
+        chart_source.loc[
+            chart_source["is_close_day"],
+            ["date", "day_type", "close_type"],
+        ].drop_duplicates("date"),
+        on="date",
+        how="inner",
+    )
+    close_day_source["band_start"] = close_day_source["date"] - pd.Timedelta(hours=12)
+    close_day_source["band_end"] = close_day_source["date"] + pd.Timedelta(hours=12)
+
+    forecast_max = _finite_max(chart_source["forecast_cum"])
+    target_max = _finite_max(target_source["target_cum"])
+    monthly_target = _finite_max(target_source["monthly_target"])
+    y_max = max(forecast_max, target_max, monthly_target, 1.0)
+    scenario_order = forecast_source["scenario_id"].drop_duplicates().tolist()
+    selected_id = str(selected_scenario_id or "")
+    final_label_source = _selected_daily_final_label_source(forecast_source, selected_id)
+    as_of_dates = chart_source.loc[chart_source["is_as_of_date"], "date"].drop_duplicates()
+    as_of_source = pd.DataFrame({"as_of_date": as_of_dates.tolist()[:1]})
+
+    close_day_band = (
+        alt.Chart(close_day_source)
+        .mark_rect(color="#FEF3C7", opacity=0.55)
+        .encode(
+            x=alt.X("band_start:T", title=None),
+            x2="band_end:T",
+            tooltip=[
+                alt.Tooltip("date_label:N", title="마감일"),
+                alt.Tooltip("close_type:N", title="마감 유형"),
+            ],
+        )
+    )
+    target_line = (
+        alt.Chart(target_source)
+        .mark_line(color="#94A3B8", strokeDash=[6, 5], strokeWidth=1.8)
+        .encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%m/%d")),
+            y=alt.Y(
+                "target_cum:Q",
+                title="누적 실적/예상(억원)",
+                scale=alt.Scale(domain=[0, y_max * 1.08], nice=True),
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("target_cum:Q", title="누적 목표선", format=chart_value_format("억원")),
+            ],
+        )
+    )
+    actual_line = (
+        alt.Chart(actual_source)
+        .mark_line(point=True, color="#1D4ED8", strokeWidth=3)
+        .encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%m/%d")),
+            y=alt.Y("forecast_cum:Q"),
+            tooltip=_daily_forecast_tooltips("확정 누적 실적"),
+        )
+    )
+    forecast_lines = (
+        alt.Chart(forecast_source)
+        .mark_line(point=alt.OverlayMarkDef(filled=True, size=42), interpolate="monotone")
+        .encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%m/%d")),
+            y=alt.Y("forecast_cum:Q"),
+            color=alt.Color(
+                "scenario_id:N",
+                title="시나리오",
+                sort=scenario_order,
+                scale=alt.Scale(range=list(CHART_COLOR_RANGE)),
+            ),
+            detail="line_group:N",
+            opacity=alt.condition("datum.is_selected", alt.value(1.0), alt.value(0.38)),
+            strokeWidth=alt.condition("datum.is_selected", alt.value(3.2), alt.value(1.5)),
+            tooltip=_daily_forecast_tooltips("누적 예상"),
+        )
+    )
+    monthly_rule = (
+        alt.Chart(pd.DataFrame({"monthly_target": [monthly_target]}))
+        .mark_rule(color="#DC2626", strokeDash=[7, 5], strokeWidth=2)
+        .encode(
+            y="monthly_target:Q",
+            tooltip=[
+                alt.Tooltip(
+                    "monthly_target:Q",
+                    title="공식 월 목표",
+                    format=chart_value_format("억원"),
+                )
+            ],
+        )
+    )
+    as_of_rule = (
+        alt.Chart(as_of_source)
+        .mark_rule(color="#64748B", strokeDash=[2, 3], strokeWidth=1.4)
+        .encode(
+            x="as_of_date:T",
+            tooltip=[alt.Tooltip("as_of_date:T", title="기준일", format="%Y-%m-%d")],
+        )
+    )
+    final_label = (
+        alt.Chart(final_label_source)
+        .mark_text(align="right", baseline="middle", dx=-7, dy=-8, fontSize=11, fontWeight="bold")
+        .encode(
+            x="date:T",
+            y="forecast_cum:Q",
+            text="final_label:N",
+            color=alt.value("#111827"),
+        )
+    )
+
+    chart = (
+        (
+            close_day_band
+            + target_line
+            + actual_line
+            + forecast_lines
+            + monthly_rule
+            + as_of_rule
+            + final_label
+        )
+        .properties(height=360)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _daily_forecast_tooltips(value_title: str) -> list[alt.Tooltip]:
+    return [
+        alt.Tooltip("date_label:N", title="날짜"),
+        alt.Tooltip("scenario_id:N", title="시나리오"),
+        alt.Tooltip("day_type:N", title="일자 구분"),
+        alt.Tooltip("close_type:N", title="마감 유형"),
+        alt.Tooltip("daily_expected:Q", title="당일 예상", format=chart_value_format("억원")),
+        alt.Tooltip("forecast_cum:Q", title=value_title, format=chart_value_format("억원")),
+        alt.Tooltip("target_cum:Q", title="누적 목표선", format=chart_value_format("억원")),
+        alt.Tooltip("achievement_rate:Q", title="월 목표 달성률", format=".1%"),
+        alt.Tooltip("risk_level_label:N", title="위험등급"),
+    ]
+
+
+def _finite_max(values: pd.Series) -> float:
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    numeric_values = numeric_values.loc[numeric_values.map(math.isfinite)]
+    if numeric_values.empty:
+        return 0.0
+    return float(numeric_values.max())
+
+
+def _selected_daily_final_label_source(
+    forecast_source: pd.DataFrame,
+    selected_scenario_id: str,
+) -> pd.DataFrame:
+    if forecast_source.empty:
+        return pd.DataFrame(columns=[*SCENARIO_DAILY_FORECAST_COLUMNS, "final_label"])
+    selected = forecast_source.loc[forecast_source["scenario_id"] == selected_scenario_id]
+    if selected.empty:
+        selected = forecast_source
+    last_rows = (
+        selected.sort_values(["scenario_id", "date"])
+        .groupby("scenario_id", as_index=False)
+        .tail(1)
+        .copy()
+    )
+    if selected_scenario_id and selected_scenario_id in set(last_rows["scenario_id"].astype(str)):
+        last_rows = last_rows.loc[last_rows["scenario_id"].astype(str) == selected_scenario_id]
+    last_rows["final_label"] = (
+        last_rows["scenario_id"].astype(str)
+        + " "
+        + last_rows["forecast_label"].astype(str)
+        + " / "
+        + last_rows["achievement_label"].astype(str)
+    )
+    return last_rows
+
+
+def _render_scenario_target_position_chart(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> None:
+    source = build_scenario_target_position_source(scenario_df, selected_scenario_id)
+    if source.empty:
+        st.info("목표선 대비 예상 실적 차트 데이터 없음")
+        return
+
+    scenario_order = source["scenario_id"].tolist()
+    target_value = source["monthly_target"].dropna().iloc[0]
+    x_max = max(
+        float(source["forecast_after_provision"].max()),
+        float(source["monthly_target"].max()),
+        1.0,
+    )
+    bar = (
+        alt.Chart(source)
+        .mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3)
+        .encode(
+            y=alt.Y(
+                "scenario_id:N",
+                title=None,
+                sort=scenario_order,
+                axis=alt.Axis(labelLimit=120),
+            ),
+            x=alt.X(
+                "forecast_after_provision:Q",
+                title="전략 반영 후 예상(억원)",
+                scale=alt.Scale(domain=[0, x_max * 1.08], nice=True),
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.Color(
+                "target_status_label:N",
+                title="목표 상태",
+                scale=alt.Scale(
+                    domain=["목표 미달", "목표 달성", "목표 초과", "계산 불가"],
+                    range=["#DC2626", "#2563EB", "#059669", "#6B7280"],
+                ),
+            ),
+            opacity=alt.condition("datum.is_selected", alt.value(1.0), alt.value(0.68)),
+            stroke=alt.condition("datum.is_selected", alt.value("#111827"), alt.value("#ffffff")),
+            strokeWidth=alt.condition("datum.is_selected", alt.value(2.2), alt.value(0.4)),
+            tooltip=[
+                alt.Tooltip("scenario_id:N", title="시나리오"),
+                alt.Tooltip("target_status_label:N", title="목표 상태"),
+                alt.Tooltip("risk_level_label:N", title="위험등급"),
+                alt.Tooltip(
+                    "forecast_after_provision:Q",
+                    title="전략 반영 후 예상",
+                    format=chart_value_format("억원"),
+                ),
+                alt.Tooltip(
+                    "monthly_target:Q",
+                    title="공식 월 목표",
+                    format=chart_value_format("억원"),
+                ),
+                alt.Tooltip("variance_label:N", title="목표 대비 차이"),
+            ],
+        )
+    )
+    target_rule = (
+        alt.Chart(pd.DataFrame({"monthly_target": [target_value]}))
+        .mark_rule(color="#DC2626", strokeDash=[6, 4], strokeWidth=2)
+        .encode(
+            x="monthly_target:Q",
+            tooltip=[
+                alt.Tooltip(
+                    "monthly_target:Q",
+                    title="공식 월 목표",
+                    format=chart_value_format("억원"),
+                )
+            ],
+        )
+    )
+    labels = (
+        alt.Chart(source)
+        .mark_text(align="left", baseline="middle", dx=5, fontSize=11)
+        .encode(
+            y=alt.Y("scenario_id:N", sort=scenario_order),
+            x="forecast_after_provision:Q",
+            text="forecast_label:N",
+        )
+    )
+    chart = (
+        (bar + target_rule + labels)
+        .properties(height=max(260, len(source) * 30))
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_scenario_gap_chart(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> None:
+    source = build_scenario_target_position_source(scenario_df, selected_scenario_id)
+    if source.empty:
+        st.info("부족/초과 금액 차트 데이터 없음")
+        return
+
+    scenario_order = source["scenario_id"].tolist()
+    magnitude = max(
+        float(source["target_variance"].abs().max(skipna=True) or 0.0),
+        1.0,
+    )
+    x_domain = [-magnitude * 1.2, magnitude * 1.2]
+    bar = (
+        alt.Chart(source)
+        .mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3)
+        .encode(
+            y=alt.Y(
+                "scenario_id:N",
+                title=None,
+                sort=scenario_order,
+                axis=alt.Axis(labelLimit=120),
+            ),
+            x=alt.X(
+                "target_variance:Q",
+                title="목표 대비 차이(억원)",
+                scale=alt.Scale(domain=x_domain, nice=True),
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.condition(
+                "datum.target_variance >= 0",
+                alt.value("#059669"),
+                alt.value("#DC2626"),
+            ),
+            opacity=alt.condition("datum.is_selected", alt.value(1.0), alt.value(0.7)),
+            tooltip=[
+                alt.Tooltip("scenario_id:N", title="시나리오"),
+                alt.Tooltip("target_status_label:N", title="목표 상태"),
+                alt.Tooltip("variance_label:N", title="목표 대비 차이"),
+            ],
+        )
+    )
+    zero_rule = alt.Chart(pd.DataFrame({"zero": [0]})).mark_rule(
+        color="#111827",
+        strokeWidth=1.4,
+    ).encode(x="zero:Q")
+    positive_text = (
+        alt.Chart(source.loc[source["target_variance"] >= 0])
+        .mark_text(align="left", baseline="middle", dx=4, fontSize=11)
+        .encode(
+            y=alt.Y("scenario_id:N", sort=scenario_order),
+            x="target_variance:Q",
+            text="variance_label:N",
+        )
+    )
+    negative_text = (
+        alt.Chart(source.loc[source["target_variance"] < 0])
+        .mark_text(align="right", baseline="middle", dx=-4, fontSize=11)
+        .encode(
+            y=alt.Y("scenario_id:N", sort=scenario_order),
+            x="target_variance:Q",
+            text="variance_label:N",
+        )
+    )
+    chart = (
+        (bar + zero_rule + positive_text + negative_text)
+        .properties(height=max(260, len(source) * 30))
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_scenario_heatmap(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> None:
+    source = build_scenario_heatmap_source(scenario_df, selected_scenario_id)
+    if source.empty:
+        st.info("시나리오 조합 지도 데이터 없음")
+        return
+
+    strategy_order = _ordered_strategy_keys(scenario_df)
+    magnitude = max(
+        float(pd.to_numeric(source["target_variance"], errors="coerce").abs().max() or 0.0),
+        1.0,
+    )
+    heatmap = (
+        alt.Chart(source)
+        .mark_rect(cornerRadius=2)
+        .encode(
+            x=alt.X("strategy_key:N", title="운영전략", sort=strategy_order),
+            y=alt.Y("forecast_key:N", title="예측모델", sort=["F1", "F2", "F3"]),
+            color=alt.Color(
+                "target_variance:Q",
+                title="목표 대비 차이",
+                scale=alt.Scale(
+                    domain=[-magnitude, 0, magnitude],
+                    range=["#DC2626", "#F8FAFC", "#059669"],
+                ),
+            ),
+            stroke=alt.condition("datum.is_selected", alt.value("#111827"), alt.value("#ffffff")),
+            strokeWidth=alt.condition("datum.is_selected", alt.value(2.4), alt.value(0.8)),
+            tooltip=[
+                alt.Tooltip("scenario_id:N", title="시나리오"),
+                alt.Tooltip("target_status_label:N", title="목표 상태"),
+                alt.Tooltip("variance_label:N", title="목표 대비 차이"),
+            ],
+        )
+    )
+    text = (
+        alt.Chart(source)
+        .mark_text(fontSize=12, fontWeight="bold")
+        .encode(
+            x=alt.X("strategy_key:N", sort=strategy_order),
+            y=alt.Y("forecast_key:N", sort=["F1", "F2", "F3"]),
+            text="variance_label:N",
+            color=alt.value("#111827"),
+        )
+    )
+    chart = (
+        (heatmap + text)
+        .properties(height=210)
+        .configure_axis(labelFontSize=12, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_remaining_uplift_chart(revised_targets_df: pd.DataFrame) -> None:
+    source = build_remaining_target_daily_source(revised_targets_df)
+    if source.empty:
+        st.info("일자별 추가 부담 차트 데이터 없음")
+        return
+
+    date_order = source["date_label"].tolist()
+    chart = (
+        alt.Chart(source)
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        .encode(
+            x=alt.X(
+                "date_label:N",
+                title=None,
+                sort=date_order,
+                axis=alt.Axis(labelAngle=-30, labelLimit=120),
+            ),
+            y=alt.Y(
+                "uplift:Q",
+                title="추가 배분 목표(억원)",
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.Color(
+                "day_type:N",
+                title="일자 구분",
+                scale=alt.Scale(
+                    domain=["마감일", "일반일", "잔여일"],
+                    range=["#D97706", "#2563EB", "#6B7280"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("day_type:N", title="일자 구분"),
+                alt.Tooltip("close_type:N", title="마감 유형"),
+                alt.Tooltip("original_target:Q", title="기존 일 목표", format=chart_value_format("억원")),
+                alt.Tooltip("uplift:Q", title="추가 배분 목표", format=chart_value_format("억원")),
+                alt.Tooltip("revised_target:Q", title="수정 후 일 목표", format=chart_value_format("억원")),
+            ],
+        )
+        .properties(height=300)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_remaining_target_stack_chart(revised_targets_df: pd.DataFrame) -> None:
+    daily = build_remaining_target_daily_source(revised_targets_df)
+    stack_source = build_remaining_target_stack_source(revised_targets_df)
+    if daily.empty or stack_source.empty:
+        st.info("기존 목표와 추가 배분 차트 데이터 없음")
+        return
+
+    date_order = daily["date_label"].tolist()
+    bars = (
+        alt.Chart(stack_source)
+        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+        .encode(
+            x=alt.X(
+                "date_label:N",
+                title=None,
+                sort=date_order,
+                axis=alt.Axis(labelAngle=-30, labelLimit=120),
+            ),
+            y=alt.Y(
+                "value:Q",
+                title="수정 후 일 목표(억원)",
+                stack="zero",
+                axis=alt.Axis(format=chart_value_format("억원")),
+            ),
+            color=alt.Color(
+                "target_part:N",
+                title="목표 구성",
+                scale=alt.Scale(
+                    domain=["기존 일 목표", "추가 배분 목표"],
+                    range=["#CBD5E1", "#D97706"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("target_part:N", title="구성"),
+                alt.Tooltip("value:Q", title="금액", format=chart_value_format("억원")),
+                alt.Tooltip("revised_target:Q", title="수정 후 일 목표", format=chart_value_format("억원")),
+                alt.Tooltip("cap_target:Q", title="일별 허용 상한", format=chart_value_format("억원")),
+            ],
+        )
+    )
+    cap_line = (
+        alt.Chart(daily)
+        .mark_line(point=True, color="#DC2626", strokeDash=[5, 4], strokeWidth=2)
+        .encode(
+            x=alt.X("date_label:N", sort=date_order),
+            y=alt.Y("cap_target:Q"),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("cap_target:Q", title="일별 허용 상한", format=chart_value_format("억원")),
+            ],
+        )
+    )
+    expected_line = (
+        alt.Chart(daily)
+        .mark_line(point=True, color="#0F766E", strokeWidth=2)
+        .encode(
+            x=alt.X("date_label:N", sort=date_order),
+            y=alt.Y("expected_after_revision:Q"),
+            tooltip=[
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip(
+                    "expected_after_revision:Q",
+                    title="수정 후 예상 일 실적",
+                    format=chart_value_format("억원"),
+                ),
+            ],
+        )
+    )
+    chart = (
+        (bars + cap_line + expected_line)
+        .properties(height=320)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _render_grouped_bar_chart(
@@ -3450,6 +5191,7 @@ def _render_visual_metric_definitions(metric_columns: tuple[str, ...]) -> None:
 def _load_uploaded_input(
     uploaded_file: Any,
     sort_by: str = "business_day_no",
+    strict_business_day_no: bool = True,
 ) -> pd.DataFrame:
     suffix = Path(uploaded_file.name).suffix.lower()
     if suffix not in {".csv", ".xlsx"}:
@@ -3460,7 +5202,11 @@ def _load_uploaded_input(
         temp_path.write_bytes(uploaded_file.getvalue())
         if sort_by not in {"business_day_no", "date"}:
             raise ValueError("sort_by must be either 'business_day_no' or 'date'.")
-        return load_input(temp_path, sort_by=sort_by)
+        return load_input(
+            temp_path,
+            sort_by=sort_by,
+            strict_business_day_no=strict_business_day_no,
+        )
 
 
 def _filter_scenarios(
