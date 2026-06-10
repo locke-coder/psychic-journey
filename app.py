@@ -1468,6 +1468,11 @@ def save_actual_values(
     saved_path = Path(path)
     saved_path.parent.mkdir(parents=True, exist_ok=True)
     saved_actuals = _build_saved_actuals(df)
+    if saved_path.exists():
+        saved_actuals = _merge_saved_actuals(
+            load_saved_actuals(saved_path),
+            saved_actuals,
+        )
     saved_actuals.to_csv(saved_path, index=False, encoding="utf-8-sig")
     return saved_path
 
@@ -1506,7 +1511,14 @@ def apply_saved_actuals(
     for column in ACTUAL_CUM_COLUMNS:
         saved_column = f"{column}_saved"
         if column in result.columns and saved_column in merged.columns:
-            result.loc[matched, column] = merged.loc[matched, saved_column].to_numpy()
+            has_saved_value = matched & merged[saved_column].notna()
+            if not has_saved_value.any():
+                continue
+            saved_values = pd.to_numeric(
+                merged.loc[has_saved_value, saved_column],
+                errors="coerce",
+            )
+            result.loc[has_saved_value, column] = saved_values.to_numpy(dtype="float64")
 
     return result.drop(columns=["_date_key", "_business_day_key"])
 
@@ -1536,7 +1548,35 @@ def _build_saved_actuals(df: pd.DataFrame) -> pd.DataFrame:
         result[column] = pd.to_numeric(values, errors="coerce")
 
     valid_rows = result["date"].notna() & result["business_day_no"].notna()
-    return result.loc[valid_rows, list(SAVED_ACTUAL_COLUMNS)].reset_index(drop=True)
+    return _normalize_saved_actuals(result.loc[valid_rows, list(SAVED_ACTUAL_COLUMNS)])
+
+
+def _merge_saved_actuals(
+    previous_actuals: pd.DataFrame,
+    latest_actuals: pd.DataFrame,
+) -> pd.DataFrame:
+    previous = _normalize_saved_actuals(previous_actuals)
+    latest = _normalize_saved_actuals(latest_actuals)
+    if previous.empty:
+        return latest
+    if latest.empty:
+        return previous
+
+    key_columns = ["date", "business_day_no"]
+    merged = previous.merge(
+        latest,
+        on=key_columns,
+        how="outer",
+        suffixes=("_previous", "_latest"),
+        sort=False,
+    )
+    result = merged.loc[:, key_columns].copy()
+    for column in ACTUAL_CUM_COLUMNS:
+        latest_column = f"{column}_latest"
+        previous_column = f"{column}_previous"
+        result[column] = merged[latest_column].combine_first(merged[previous_column])
+
+    return _normalize_saved_actuals(result)
 
 
 def _normalize_saved_actuals(saved_actuals: pd.DataFrame) -> pd.DataFrame:
@@ -1556,8 +1596,23 @@ def _normalize_saved_actuals(saved_actuals: pd.DataFrame) -> pd.DataFrame:
         result[column] = pd.to_numeric(values, errors="coerce")
 
     result = result.dropna(subset=["date", "business_day_no"])
-    result = result.drop_duplicates(["date", "business_day_no"], keep="last")
-    return result.reset_index(drop=True)
+    if result.empty:
+        return result.reset_index(drop=True)
+
+    result = (
+        result.groupby(["date", "business_day_no"], as_index=False, sort=False)
+        .agg({column: _last_non_empty_value for column in ACTUAL_CUM_COLUMNS})
+        .loc[:, list(SAVED_ACTUAL_COLUMNS)]
+    )
+    has_actual_value = result.loc[:, list(ACTUAL_CUM_COLUMNS)].notna().any(axis=1)
+    return result.loc[has_actual_value].reset_index(drop=True)
+
+
+def _last_non_empty_value(values: pd.Series) -> object:
+    filled_values = values.dropna()
+    if filled_values.empty:
+        return pd.NA
+    return filled_values.iloc[-1]
 
 
 def build_runtime_config(
