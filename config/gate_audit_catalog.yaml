@@ -754,6 +754,66 @@ gates:
       - Missing history files are handled as empty canonical frames.
       - Backtest summary is displayed only when forecast_history and final_actuals can be matched.
 
+  - gate_id: G23_OUTPUTS_LATEST_STRICT
+    gate_name: Outputs Latest Strict Gate
+    phase: outputs_latest_strict
+    required_files:
+      - tools/check_outputs_latest.py
+      - tests/test_outputs_latest_strict.py
+    pytest_targets:
+      - tests/test_outputs_latest_strict.py
+    command_targets:
+      - ["{python}", "tools/check_outputs_latest.py", "--strict"]
+    keyword_scan_files:
+      - tools/check_outputs_latest.py
+      - tests/test_outputs_latest_strict.py
+    required_keywords:
+      - outputs/latest
+      - ScenarioGrid
+      - target_status
+      - target_variance
+      - surplus_to_target
+      - strategy_type
+      - overachievement_strategy
+      - recommended_action
+      - pre_metadata
+      - archive_old_format
+      - archive_invalid
+      - missing_required_columns
+    required_test_patterns:
+      - file: tests/test_outputs_latest_strict.py
+        label: latest report classification test exists
+        any_of:
+          - test_latest_report_is_classified
+      - file: tests/test_outputs_latest_strict.py
+        label: input template classification test exists
+        any_of:
+          - test_input_template_is_classified_without_scenario_grid
+      - file: tests/test_outputs_latest_strict.py
+        label: pre_metadata old format test exists
+        any_of:
+          - test_pre_metadata_file_is_old_format
+      - file: tests/test_outputs_latest_strict.py
+        label: organize suffix test exists
+        any_of:
+          - test_organize_adds_suffix_when_archive_filename_exists
+    forbidden_patterns:
+      - ".weekday("
+      - "dt.weekday"
+      - "weekday("
+      - "next_monday"
+      - "next_thursday"
+      - "day_name =="
+      - "day_name in"
+      - "월요일"
+      - "목요일"
+    warning_keywords: []
+    pass_conditions:
+      - outputs/latest contains only latest report workbooks, valid input templates, and .gitkeep.
+      - pre_metadata workbooks are archived outside outputs/latest.
+      - Invalid workbooks are archived outside outputs/latest.
+      - The strict checker reports schema gaps without printing workbook cell data.
+
   - gate_id: ALL
     gate_name: All Gates
     phase: all
@@ -779,6 +839,8 @@ gates:
       - tests/test_final_actual_store.py
       - tests/test_backtest_engine.py
       - tests/test_e2e_history_backtest.py
+      - tools/check_outputs_latest.py
+      - tests/test_outputs_latest_strict.py
     pytest_targets:
       - tests
     required_gates:
@@ -787,6 +849,7 @@ gates:
       - G20
       - G21
       - G22
+      - G23_OUTPUTS_LATEST_STRICT
     required_keywords:
       - target_status
       - target_variance
@@ -813,6 +876,8 @@ gates:
       - error_rate
       - HISTORY_TAB_LABEL
       - Backtest
+      - outputs/latest
+      - archive_old_format
     forbidden_patterns:
       - ".weekday("
       - "dt.weekday"
@@ -828,4 +893,4 @@ gates:
       - All individual Gate definitions are available to Gate Runner.
       - All required audit keywords are declared.
       - All common forbidden close-day inference patterns are declared.
-      - G19, G20, G21, and G22 are included in the ALL gate dependency chain.
+      - G19, G20, G21, G22, and G23_OUTPUTS_LATEST_STRICT are included in the ALL gate dependency chain.

@@ -16,6 +16,20 @@ Backtest results.
   resident registration numbers, or any other sensitive identifiers.
 - Keep the pilot group limited to the approved 1 to 3 users. Do not forward the
   app URL, input files, output Excel files, or audit bundles outside the pilot.
+- L3: sample / anonymous pilot. Use sample or anonymous aggregate inputs unless
+  a later approval record explicitly changes the level.
+- L4-Shadow: restricted internal aggregate real-data shadow validation. This is
+  limited to invited internal users only and does not approve production use.
+- L4-Production: official production operation, not approved.
+- app result does not replace official reporting. Continue to rely on the
+  official reporting process for controlled business records.
+- memo identifiers prohibited. Do not enter customer, contract, account,
+  personal, or contact identifiers in memo fields, notes, reports, or issue
+  records.
+- broad public real-data use prohibited. Do not use public or broadly shared
+  Streamlit access for real-data operation.
+- `final_actual` is final_actual shadow aggregate only during approved
+  L4-Shadow validation.
 
 ## 1. Daily Input File Update
 

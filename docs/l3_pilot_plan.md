@@ -48,6 +48,24 @@ Out of scope:
 - Use of customer names, phone numbers, addresses, contract numbers, resident
   registration numbers, or other sensitive identifiers.
 
+## Release Level Boundaries
+
+- L3: sample / anonymous pilot. The L3 pilot may use sample data or anonymous
+  aggregate operating inputs only.
+- L4-Shadow: restricted internal aggregate real-data shadow validation. This is
+  not approved unless a separate approval record exists and access remains
+  restricted to invited internal users only.
+- L4-Production: official production operation, not approved.
+- app result does not replace official reporting. Official reporting remains
+  the controlling source for business decisions and external communication.
+- memo identifiers prohibited. Memo fields, notes, issue records, and reports
+  must not contain customer, contract, account, personal, or contact
+  identifiers.
+- broad public real-data use prohibited. Public or broadly shared Streamlit
+  real-data operation is outside the approved L3/L4-Shadow scope.
+- `final_actual` is final_actual shadow aggregate only during any approved
+  L4-Shadow validation.
+
 ## Pilot Period
 
 Minimum duration: 2 weeks.
@@ -83,6 +101,7 @@ the pilot record.
   copy.
 - Keep outputs, downloaded reports, and audit notes in the approved pilot
   folder only.
+- Keep access to invited internal users only.
 - Use aggregate operating notes only. Do not record sensitive identifiers.
 - Treat F2/F3 fallback behavior as an operating observation, not as a reason to
   change formulas during the pilot.

@@ -4,8 +4,11 @@ outputs/*.xlsx
 outputs/saved_actuals.csv
 outputs/streamlit_deploy_source/
 outputs/streamlit_deploy_source.zip
+outputs/pytest_tmp/
+outputs/*.log
 .venv/
 .env
+*.key
 .streamlit/secrets.toml
 .streamlit/secrets.*.toml
 !.streamlit/secrets.example.toml
