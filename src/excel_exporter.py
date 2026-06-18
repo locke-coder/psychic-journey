@@ -103,9 +103,33 @@ CONFIDENCE_BAND_COLUMNS = (
 INSIGHTS_COLUMNS = ("insight",)
 SCENARIO_GRID_REQUIRED_COLUMNS = (
     "target_status",
+    "target_variance",
     "surplus_to_target",
     "strategy_type",
     "overachievement_strategy",
+)
+CLOSECYCLE_REQUIRED_CUMULATIVE_COLUMNS = (
+    "sales_target_cum",
+    "recognized_target_cum",
+    "sales_actual_cum",
+    "recognized_actual_cum",
+    "sales_gap_to_plan_cum",
+    "recognized_gap_to_plan_cum",
+    "sales_attainment_rate_cum",
+    "recognized_attainment_rate_cum",
+)
+CLOSECYCLE_BASE_EXPORT_COLUMNS = (
+    "business_day_no",
+    "date",
+    "day_name",
+    "is_close_day",
+    "close_type",
+    "close_cycle_no",
+    "close_cycle_label",
+    "cycle_sales_target",
+    "cycle_recognized_target",
+    "cycle_sales_actual",
+    "cycle_recognized_actual",
 )
 CONFIDENCE_BAND_COLUMN_PAIRS = (
     ("confidence_lower", "confidence_upper"),
@@ -163,7 +187,10 @@ def export_daily_report(
         _ensure_dataframe_columns(scenario_df, SCENARIO_GRID_REQUIRED_COLUMNS),
     )
     _write_dataframe_sheet(workbook.create_sheet("DailyRevisedTargets"), revised_targets_df)
-    _write_dataframe_sheet(workbook.create_sheet("CloseCycle"), close_cycle_df)
+    _write_dataframe_sheet(
+        workbook.create_sheet("CloseCycle"),
+        _prepare_close_cycle_export_frame(close_cycle_df),
+    )
     _write_mapping_sheet(workbook.create_sheet("Validation"), validation_result)
     _write_report_text_sheet(workbook.create_sheet("ReportText"), report_text)
     _write_optional_dataframe_sheet(
@@ -478,6 +505,269 @@ def _ensure_dataframe_columns(
         if column not in df.columns:
             df[column] = None
     return df
+
+
+def _prepare_close_cycle_export_frame(data: pd.DataFrame | Any) -> pd.DataFrame:
+    df = _as_dataframe(data)
+    if df.empty and len(df.columns) == 0:
+        return df
+
+    if _has_columns(df, _daily_close_cycle_input_columns()):
+        return _build_daily_close_cycle_export_frame(df)
+
+    return _ensure_close_cycle_cumulative_columns(df)
+
+
+def _daily_close_cycle_input_columns() -> tuple[str, ...]:
+    return (
+        "business_day_no",
+        "date",
+        "is_close_day",
+        "sales_target_daily",
+        "recognized_target_daily",
+        "sales_actual_cum",
+        "recognized_actual_cum",
+    )
+
+
+def _build_daily_close_cycle_export_frame(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+    working["_business_day_sort"] = pd.to_numeric(
+        working["business_day_no"],
+        errors="raise",
+    )
+    working = working.sort_values(
+        "_business_day_sort",
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    is_close_day = _coerce_close_day_series(working["is_close_day"])
+    close_cycle_no = _close_cycle_numbers(is_close_day)
+    working["close_cycle_no"] = close_cycle_no
+    working["close_cycle_label"] = [f"C{cycle_no:02d}" for cycle_no in close_cycle_no]
+
+    for column in ("day_name", "close_type"):
+        if column not in working.columns:
+            working[column] = None
+
+    for metric in ("sales", "recognized"):
+        target_daily_column = f"{metric}_target_daily"
+        actual_cum_column = f"{metric}_actual_cum"
+        target_cum_column = f"{metric}_target_cum"
+        gap_column = f"{metric}_gap_to_plan_cum"
+        rate_column = f"{metric}_attainment_rate_cum"
+        cycle_target_column = f"cycle_{metric}_target"
+        cycle_actual_column = f"cycle_{metric}_actual"
+
+        target_daily = pd.to_numeric(
+            working[target_daily_column],
+            errors="raise",
+        ).fillna(0.0)
+        actual_cum = pd.to_numeric(
+            working[actual_cum_column],
+            errors="coerce",
+        )
+
+        working[target_cum_column] = target_daily.cumsum()
+        working[actual_cum_column] = actual_cum
+        working[gap_column] = actual_cum - working[target_cum_column]
+        working[rate_column] = actual_cum / working[target_cum_column].where(
+            working[target_cum_column] != 0
+        )
+
+        working[cycle_target_column] = target_daily.groupby(
+            working["close_cycle_no"],
+            sort=False,
+        ).transform("sum")
+        working[cycle_actual_column] = _daily_actual_from_cumulative(actual_cum).groupby(
+            working["close_cycle_no"],
+            sort=False,
+        ).transform(lambda values: values.sum(min_count=1))
+
+    ordered_columns = [
+        *[column for column in CLOSECYCLE_BASE_EXPORT_COLUMNS if column in working.columns],
+        "sales_target_daily",
+        "recognized_target_daily",
+        *CLOSECYCLE_REQUIRED_CUMULATIVE_COLUMNS,
+        *[
+            column
+            for column in working.columns
+            if column
+            not in {
+                "_business_day_sort",
+                *CLOSECYCLE_BASE_EXPORT_COLUMNS,
+                "sales_target_daily",
+                "recognized_target_daily",
+                *CLOSECYCLE_REQUIRED_CUMULATIVE_COLUMNS,
+            }
+        ],
+    ]
+    return working.loc[:, ordered_columns]
+
+
+def _ensure_close_cycle_cumulative_columns(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+
+    if "date" not in result.columns and "cycle_end_date" in result.columns:
+        result["date"] = result["cycle_end_date"]
+    if "close_cycle_no" not in result.columns and "cycle_id" in result.columns:
+        result["close_cycle_no"] = result["cycle_id"]
+    if "close_cycle_label" not in result.columns and "close_cycle_no" in result.columns:
+        result["close_cycle_label"] = [
+            f"C{int(cycle_no):02d}" if _is_finite_number(cycle_no) else None
+            for cycle_no in result["close_cycle_no"]
+        ]
+
+    _ensure_metric_close_cycle_columns(
+        result,
+        "sales",
+        target_source=_first_existing_column(
+            result,
+            ("cycle_sales_target", "sales_target_daily", "sales_target", "target_sum"),
+        ),
+        actual_source=_first_existing_column(
+            result,
+            ("cycle_sales_actual", "sales_actual_daily", "sales_actual", "actual_sum"),
+        ),
+    )
+    _ensure_metric_close_cycle_columns(
+        result,
+        "recognized",
+        target_source=_first_existing_column(
+            result,
+            (
+                "cycle_recognized_target",
+                "recognized_target_daily",
+                "recognized_target",
+            ),
+        ),
+        actual_source=_first_existing_column(
+            result,
+            (
+                "cycle_recognized_actual",
+                "recognized_actual_daily",
+                "recognized_actual",
+            ),
+        ),
+    )
+
+    for column in CLOSECYCLE_REQUIRED_CUMULATIVE_COLUMNS:
+        if column not in result.columns:
+            result[column] = None
+
+    preferred_columns = [
+        *[column for column in CLOSECYCLE_BASE_EXPORT_COLUMNS if column in result.columns],
+        *CLOSECYCLE_REQUIRED_CUMULATIVE_COLUMNS,
+    ]
+    return result.loc[
+        :,
+        [
+            *preferred_columns,
+            *[column for column in result.columns if column not in set(preferred_columns)],
+        ],
+    ]
+
+
+def _ensure_metric_close_cycle_columns(
+    df: pd.DataFrame,
+    metric: str,
+    *,
+    target_source: str | None,
+    actual_source: str | None,
+) -> None:
+    target_cum_column = f"{metric}_target_cum"
+    actual_cum_column = f"{metric}_actual_cum"
+    gap_column = f"{metric}_gap_to_plan_cum"
+    rate_column = f"{metric}_attainment_rate_cum"
+
+    if target_cum_column not in df.columns and target_source is not None:
+        df[target_cum_column] = pd.to_numeric(
+            df[target_source],
+            errors="coerce",
+        ).fillna(0.0).cumsum()
+
+    if actual_cum_column not in df.columns and actual_source is not None:
+        df[actual_cum_column] = pd.to_numeric(
+            df[actual_source],
+            errors="coerce",
+        ).cumsum()
+
+    if gap_column not in df.columns and {target_cum_column, actual_cum_column} <= set(df.columns):
+        df[gap_column] = pd.to_numeric(
+            df[actual_cum_column],
+            errors="coerce",
+        ) - pd.to_numeric(
+            df[target_cum_column],
+            errors="coerce",
+        )
+
+    if rate_column not in df.columns and {target_cum_column, actual_cum_column} <= set(df.columns):
+        target_cum = pd.to_numeric(df[target_cum_column], errors="coerce")
+        actual_cum = pd.to_numeric(df[actual_cum_column], errors="coerce")
+        df[rate_column] = actual_cum / target_cum.where(target_cum != 0)
+
+
+def _daily_actual_from_cumulative(actual_cum: pd.Series) -> pd.Series:
+    daily = actual_cum.diff()
+    if not daily.empty:
+        daily.iloc[0] = actual_cum.iloc[0]
+    daily.loc[actual_cum.isna()] = pd.NA
+    return daily
+
+
+def _close_cycle_numbers(is_close_day: pd.Series) -> list[int]:
+    cycle_numbers: list[int] = []
+    current_cycle_no = 1
+    for is_close in is_close_day:
+        cycle_numbers.append(current_cycle_no)
+        if is_close:
+            current_cycle_no += 1
+    return cycle_numbers
+
+
+def _coerce_close_day_series(values: pd.Series) -> pd.Series:
+    true_tokens = {"Y", "YES", "TRUE", "1"}
+    false_tokens = {"N", "NO", "FALSE", "0", ""}
+    coerced: list[bool] = []
+    for value in values:
+        try:
+            if pd.isna(value):
+                coerced.append(False)
+                continue
+        except TypeError:
+            pass
+
+        if isinstance(value, bool):
+            coerced.append(value)
+            continue
+
+        if isinstance(value, str):
+            token = value.strip().upper()
+            if token in true_tokens:
+                coerced.append(True)
+                continue
+            if token in false_tokens:
+                coerced.append(False)
+                continue
+
+        if _is_number(value) and value in (0, 1):
+            coerced.append(bool(value))
+            continue
+
+        raise ValueError(f"Unsupported is_close_day value: {value!r}")
+
+    return pd.Series(coerced, index=values.index, dtype=bool)
+
+
+def _has_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> bool:
+    return set(columns) <= set(df.columns)
+
+
+def _first_existing_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+    for column in candidates:
+        if column in df.columns:
+            return column
+    return None
 
 
 def _write_mapping_sheet(ws: Worksheet, data: Mapping[str, Any] | Any) -> None:

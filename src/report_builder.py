@@ -146,7 +146,7 @@ def append_model_error_summary_to_report(
     if not summary_text:
         return str(report_text)
     base_text = str(report_text).strip()
-    section = f"[{MODEL_ERROR_SECTION_TITLE}]\n- {summary_text}"
+    section = f"[{MODEL_ERROR_SECTION_TITLE}]\n\n- {summary_text}"
     if not base_text:
         return section
     return f"{base_text}\n\n{section}"
@@ -203,7 +203,7 @@ def _format_report_sections(sections: list[tuple[str, list[str]]]) -> str:
         if not cleaned_lines:
             continue
 
-        paragraph_lines = [f"[{title}]"]
+        paragraph_lines = [f"[{title}]", ""]
         if title == TERM_DEFINITION_SECTION_TITLE:
             paragraph_lines.extend(cleaned_lines)
         else:

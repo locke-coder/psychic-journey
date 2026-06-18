@@ -8,8 +8,9 @@ import io
 import math
 import os
 import tempfile
+from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import altair as alt
 import pandas as pd
@@ -64,7 +65,36 @@ from src.report_builder import (
 )
 from src.scenario_runner import run_scenario_grid
 from src.schema import get_metric_columns, load_model_config
+from src.ui_components import (
+    format_krw,
+    render_download_card,
+    render_history_card,
+    render_kpi_card,
+    render_operation_mode_card,
+    render_pace_header,
+    render_report_card,
+    render_scenario_card,
+    render_section_header,
+    render_status_badge,
+    scenario_description,
+    scenario_display_name,
+    status_label,
+)
+from src.ui_navigation import (
+    PAGE_DEFINITIONS,
+    get_current_page,
+    page_title,
+)
+from src.ui_pages import render_page
+from src.ui_theme import get_pace_check_css
 from src.validator import validate_input
+from src.visualization_builder import (
+    build_close_day_markers,
+    build_close_cycle_cumulative_source,
+    build_forecast_model_mini_chart_source,
+    build_pace_projection_chart_data,
+    build_strategy_arrival_compare_source,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -72,6 +102,8 @@ SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "input_sample.csv"
 HISTORICAL_SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "historical_input_sample.csv"
 OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
+AUDIT_READONLY_QUERY_PARAM = "audit_readonly"
+AUDIT_READONLY_TRUE_VALUES = {"1", "true", "yes", "on"}
 INPUT_TEMPLATE_FILENAME = "month_close_forecast_input_template.xlsx"
 HISTORICAL_INPUT_TEMPLATE_FILENAME = "historical_month_close_forecast_input_template.xlsx"
 SAMPLE_INPUT_SOURCE_LABEL = "샘플 데이터"
@@ -111,6 +143,18 @@ HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS = (
     ("2026-04-06", "월", 3, True, "월마감", 14.5, 13.3, 47.0, 42.7, "다음 월은 1부터 다시 시작"),
 )
 HISTORY_TAB_LABEL = "예측 이력 / Backtest"
+CURRENT_INPUT_DF_SESSION_KEY = "pace_current_input_df"
+CURRENT_INPUT_SOURCE_SESSION_KEY = "pace_current_input_source"
+HISTORICAL_INPUT_DF_SESSION_KEY = "pace_historical_input_df"
+HISTORICAL_INPUT_SOURCE_SESSION_KEY = "pace_historical_input_source"
+PACE_METRIC_SESSION_KEY = "pace_metric"
+PACE_AS_OF_DATE_SESSION_KEY = "pace_as_of_date"
+PACE_AS_OF_DATE_DEFAULT_SESSION_KEY = "pace_as_of_date_default_token"
+PACE_FORECAST_CHOICE_SESSION_KEY = "pace_forecast_choice"
+PACE_STRATEGY_CHOICE_SESSION_KEY = "pace_strategy_choice"
+PACE_CLOSE_CAP_SESSION_KEY = "pace_close_day_cap_rate"
+PACE_NON_CLOSE_CAP_SESSION_KEY = "pace_non_close_day_cap_rate"
+PACE_SELECTED_SCENARIO_SESSION_KEY = "pace_selected_scenario_id"
 ACCESS_SESSION_STATE_KEY = "limited_distribution_access_granted"
 ACCESS_PASSWORD_SETTING_KEYS = (
     "APP_ACCESS_PASSWORD",
@@ -244,13 +288,21 @@ AMOUNT_COLUMNS = {
     "current_actual_cum",
     "remaining_target",
     "forecast_amount",
+    "expected_month_end_amount",
     "gap_to_target",
     "target_variance",
+    "target_variance_after_strategy",
     "surplus_to_target",
+    "base_forecast_amount",
+    "strategy_expected_amount",
+    "surplus_buffer",
+    "compare_value",
+    "forecast_reference_value",
     "required_uplift",
     "allocated_uplift",
     "unallocated_uplift",
     "revised_remaining_target",
+    "operating_target_reference",
     "stretch_uplift",
     "revised_monthly_target",
     "remaining_surplus_buffer",
@@ -265,6 +317,8 @@ AMOUNT_COLUMNS = {
     "cap_target",
     "expected_after_revision",
     "final_actual",
+    "target_cum",
+    "actual_cum",
     "cancellation_amount",
     "net_actual",
     "forecast_error",
@@ -285,6 +339,7 @@ RATE_COLUMNS = {
     "expected_rate",
     "allocation_weight",
     "final_achievement_rate",
+    "cumulative_achievement_rate",
     "error_rate",
     "signed_error_rate",
     "mean_error_rate",
@@ -314,21 +369,23 @@ REPORT_GLOSSARY_GROUPS = (
 )
 STRATEGY_LEVEL_COLUMNS = (
     "scenario_id",
+    "forecast_model",
     "target_status",
-    "strategy_type",
     "provision_strategy",
-    "monthly_target",
-    "forecast_amount",
-    "target_variance",
-    "gap_to_target",
-    "surplus_to_target",
-    "required_uplift",
+    "strategy_difference_summary",
     "stretch_uplift",
     "revised_monthly_target",
     "remaining_surplus_buffer",
     "minimum_remaining_to_hit_target",
     "relief_amount",
     "revised_remaining_target",
+    "strategy_type",
+    "monthly_target",
+    "forecast_amount",
+    "target_variance",
+    "gap_to_target",
+    "surplus_to_target",
+    "required_uplift",
     "forecast_after_provision",
     "gap_after_provision",
     "risk_level",
@@ -336,16 +393,12 @@ STRATEGY_LEVEL_COLUMNS = (
     "recommended_action",
 )
 STRATEGY_LEVEL_CHART_COLUMNS = (
-    "monthly_target",
-    "forecast_amount",
-    "revised_monthly_target",
-    "target_variance",
-    "gap_to_target",
-    "surplus_to_target",
     "stretch_uplift",
+    "revised_monthly_target",
     "remaining_surplus_buffer",
     "minimum_remaining_to_hit_target",
     "relief_amount",
+    "revised_remaining_target",
 )
 SCENARIO_DAILY_FORECAST_COLUMNS = (
     "date",
@@ -426,13 +479,25 @@ DISPLAY_COLUMN_LABELS = {
     **VALIDATION_COLUMN_LABELS,
     "scenario_id": "시나리오",
     "forecast_model": "예측모델",
+    "forecast_basis": "고정 예측모델",
+    "strategy_key": "전략 코드",
     "provision_strategy": "운영전략",
+    "strategy_effect_type": "O전략 차이",
+    "strategy_difference_summary": "전략 차이 요약",
+    "model_name": "모델명",
+    "compare_value": "비교 기준값",
+    "forecast_reference_value": "F예측 월말 예상",
     "forecast_rate": "예상 달성률",
     "remaining_target": "잔여 목표",
     "forecast_amount": "월말 예상 실적",
+    "expected_month_end_amount": "모델별 월말 예상 실적",
     "gap_to_target": "목표 미달 예상분",
     "target_variance": "목표 대비 차이",
+    "target_variance_after_strategy": "전략 적용 후 목표 대비 차이",
     "surplus_to_target": "초과 예상분",
+    "base_forecast_amount": "기준 F예측값",
+    "strategy_expected_amount": "전략 운영 기준값",
+    "surplus_buffer": "안전버퍼",
     "target_status": "목표 상태",
     "strategy_type": "전략 구분",
     "overachievement_strategy": "초과달성 전략",
@@ -440,6 +505,7 @@ DISPLAY_COLUMN_LABELS = {
     "allocated_uplift": "배분된 상향",
     "unallocated_uplift": "미배분 상향",
     "revised_remaining_target": "수정 잔여 목표",
+    "operating_target_reference": "운영 기준 목표",
     "stretch_uplift": "상향 목표 전환분",
     "revised_monthly_target": "운영전략 월 목표",
     "remaining_surplus_buffer": "잔여 안전버퍼",
@@ -463,6 +529,9 @@ DISPLAY_COLUMN_LABELS = {
     "target_sum": "마감차수 목표 합계",
     "actual_sum": "마감차수 실적 합계",
     "achievement_rate": "마감차수 달성률",
+    "target_cum": "누적 목표선",
+    "actual_cum": "누적 실적",
+    "cumulative_achievement_rate": "누적 달성률",
     "row_count": "입력 행 수",
     "original_target": "기존 일 목표",
     "uplift": "추가 배분 목표",
@@ -704,6 +773,21 @@ VISUAL_METRIC_DEFINITIONS = {
         "unit": "억원",
         "definition": "월 목표를 넘길 것으로 예상되는 금액입니다. 미달이면 0으로 표시합니다.",
     },
+    "target_cum": {
+        "label": "누적 목표선",
+        "unit": "억원",
+        "definition": "마감차수별 목표 합계를 입력 row 순서대로 누적한 목표선입니다.",
+    },
+    "actual_cum": {
+        "label": "누적 실적",
+        "unit": "억원",
+        "definition": "마감차수별 실적 합계를 입력 row 순서대로 누적한 확정/입력 실적 흐름입니다.",
+    },
+    "cumulative_achievement_rate": {
+        "label": "누적 달성률",
+        "unit": "%",
+        "definition": "누적 실적을 누적 목표선으로 나눈 비율입니다. 마감일 판단은 입력의 is_close_day 기반 차수만 사용합니다.",
+    },
     "required_uplift": {
         "label": "목표 달성에 필요한 추가 실적",
         "unit": "억원",
@@ -929,116 +1013,2510 @@ def main() -> None:
     if st is None:
         raise RuntimeError("Streamlit is required to run app.py. Install requirements.txt first.")
 
-    st.set_page_config(page_title="월마감 영업실적 예측툴", layout="wide")
+    st.set_page_config(page_title="마감 페이스 체크", layout="wide")
     _inject_app_styles()
-    if not _require_access_password():
-        st.stop()
+    base_config = load_model_config()
+    active_page = get_current_page(st)
+    audit_readonly = _is_audit_readonly_mode(st)
+    page_context = _build_page_context(base_config)
+    page_context["audit_readonly"] = audit_readonly
+    page_context = _with_page_callbacks(page_context, base_config)
 
-    st.title("월마감 영업실적 예측툴")
+    _render_same_window_side_nav(st, active_page)
+    _render_same_window_top_status(active_page, _top_nav_meta(page_context))
+    if audit_readonly:
+        _render_audit_readonly_banner()
+    st.markdown('<main class="page-shell">', unsafe_allow_html=True)
+    if active_page == "home":
+        _render_home_workbench_page(page_context)
+    else:
+        render_page(active_page, page_context)
+    st.markdown("</main>", unsafe_allow_html=True)
 
-    config = load_model_config()
+
+def _with_page_callbacks(
+    context: dict[str, Any],
+    base_config: dict[str, Any],
+) -> dict[str, Any]:
+    context = dict(context)
+    context.update(
+        {
+            "render_input_page": lambda: _render_input_data_page(
+                base_config,
+                audit_readonly=bool(context.get("audit_readonly", False)),
+            ),
+            "render_forecast_page": lambda: _render_forecast_detail_page(context),
+            "render_scenarios_page": lambda: _render_scenarios_detail_page(context),
+            "render_report_page": lambda: _render_report_detail_page(context),
+            "render_history_page": lambda: _render_history_detail_page(context),
+            "render_excel_page": lambda: _render_excel_detail_page(context),
+            "render_audit_page": lambda: _render_audit_detail_page(context),
+        }
+    )
+    return context
+
+
+def _build_page_context(base_config: dict[str, Any]) -> dict[str, Any]:
+    df, source_label = _get_current_input_state()
+    historical_df, historical_source_label = _get_historical_input_state()
+    metric, as_of_date, forecast_choice, provision_choice, config = _normalize_app_settings(
+        df,
+        base_config,
+    )
+
+    results = calculate_validated_results(df, as_of_date, metric, config)
+    validation_result = results["validation"]
+    scenario_df = _as_dataframe(results.get("scenario_df"))
+    next_close_result = dict(results.get("next_close_result") or {})
+    close_cycle_df = _as_dataframe(results.get("close_cycle_df"))
+
+    selected_scenario_id = ""
+    selected_row = pd.Series(dtype=object)
+    forecast_result: dict[str, object] = {}
+    provision_result: dict[str, object] = {}
+    revised_targets_df = pd.DataFrame()
+    historical_context: dict[str, object] = {"has_data": False}
+    report_text = "입력 후 계산됩니다."
+    summary_dict: dict[str, Any] = {}
+
+    if not validation_result.get("errors") and not scenario_df.empty:
+        selected_scenario_id = _default_selected_scenario_id(
+            scenario_df,
+            forecast_choice,
+            provision_choice,
+        )
+        selected_row = _selected_scenario_row(scenario_df, selected_scenario_id)
+        forecast_result, provision_result = run_selected_scenario_detail(
+            df,
+            as_of_date,
+            metric,
+            selected_scenario_id,
+            config,
+        )
+        revised_targets_df = _as_dataframe(provision_result.get("allocation_by_day"))
+        historical_context = build_historical_context(
+            historical_df,
+            df,
+            as_of_date,
+            metric,
+            validation_result,
+            historical_source_label,
+        )
+        report_text = build_daily_report_text(
+            scenario_df,
+            next_close_result,
+            selected_scenario_id=selected_scenario_id,
+        )
+        summary_dict = build_summary_dict(
+            validation_result,
+            selected_row,
+            next_close_result,
+            metric,
+            as_of_date,
+        )
+
+    return {
+        "df": df,
+        "source_label": source_label,
+        "historical_df": historical_df,
+        "historical_source_label": historical_source_label,
+        "metric": metric,
+        "as_of_date": as_of_date,
+        "forecast_choice": forecast_choice,
+        "provision_choice": provision_choice,
+        "config": config,
+        "validation_result": validation_result,
+        "scenario_df": scenario_df,
+        "next_close_result": next_close_result,
+        "close_cycle_df": close_cycle_df,
+        "selected_scenario_id": selected_scenario_id,
+        "selected_row": selected_row,
+        "forecast_result": forecast_result,
+        "provision_result": provision_result,
+        "revised_targets_df": revised_targets_df,
+        "historical_context": historical_context,
+        "report_text": report_text,
+        "summary_dict": summary_dict,
+        "report_name": _expected_report_name(metric, as_of_date),
+    }
+
+
+def _get_current_input_state() -> tuple[pd.DataFrame, str]:
+    stored_df = st.session_state.get(CURRENT_INPUT_DF_SESSION_KEY)
+    stored_source = st.session_state.get(CURRENT_INPUT_SOURCE_SESSION_KEY)
+    if isinstance(stored_df, pd.DataFrame):
+        return stored_df.copy(), str(stored_source or SAMPLE_INPUT_SOURCE_LABEL)
+
+    df = load_input(SAMPLE_INPUT_PATH)
+    saved_actuals = _load_saved_actuals_for_ui()
+    prepared_df, _ = apply_latest_upload_policy(df, SAMPLE_INPUT_SOURCE_LABEL, saved_actuals)
+    _store_current_input_state(prepared_df, SAMPLE_INPUT_SOURCE_LABEL)
+    return prepared_df, SAMPLE_INPUT_SOURCE_LABEL
+
+
+def _store_current_input_state(df: pd.DataFrame, source_label: str) -> None:
+    st.session_state[CURRENT_INPUT_DF_SESSION_KEY] = df.copy()
+    st.session_state[CURRENT_INPUT_SOURCE_SESSION_KEY] = source_label
+
+
+def _get_historical_input_state() -> tuple[pd.DataFrame, str]:
+    stored_df = st.session_state.get(HISTORICAL_INPUT_DF_SESSION_KEY)
+    stored_source = st.session_state.get(HISTORICAL_INPUT_SOURCE_SESSION_KEY)
+    if isinstance(stored_df, pd.DataFrame):
+        return stored_df.copy(), str(stored_source or "")
+    return pd.DataFrame(), ""
+
+
+def _store_historical_input_state(df: pd.DataFrame, source_label: str) -> None:
+    st.session_state[HISTORICAL_INPUT_DF_SESSION_KEY] = df.copy()
+    st.session_state[HISTORICAL_INPUT_SOURCE_SESSION_KEY] = source_label
+
+
+def _normalize_app_settings(
+    df: pd.DataFrame,
+    base_config: dict[str, Any],
+) -> tuple[str, pd.Timestamp, str, str, dict[str, Any]]:
+    metric = str(st.session_state.get(PACE_METRIC_SESSION_KEY, "sales"))
+    if metric not in {"sales", "recognized"}:
+        metric = "sales"
+
+    dates = pd.to_datetime(df["date"], errors="raise")
+    date_values = [timestamp.date() for timestamp in dates]
+    default_date = default_as_of_date(df, metric).date()
+    default_token = f"{metric}:{default_date.isoformat()}"
+    if st.session_state.get(PACE_AS_OF_DATE_DEFAULT_SESSION_KEY) != default_token:
+        st.session_state[PACE_AS_OF_DATE_DEFAULT_SESSION_KEY] = default_token
+        st.session_state[PACE_AS_OF_DATE_SESSION_KEY] = default_date
+    requested_date = st.session_state.get(PACE_AS_OF_DATE_SESSION_KEY, default_date)
+    try:
+        as_of_date = pd.Timestamp(requested_date).date()
+    except Exception:  # noqa: BLE001 - UI state fallback only.
+        as_of_date = default_date
+    if as_of_date not in date_values:
+        as_of_date = default_date if default_date in date_values else date_values[0]
+
+    forecast_choice = str(st.session_state.get(PACE_FORECAST_CHOICE_SESSION_KEY, COMPARE_LABEL))
+    if forecast_choice not in {"F1", "F2", "F3", COMPARE_LABEL}:
+        forecast_choice = COMPARE_LABEL
+
+    provision_choice = str(st.session_state.get(PACE_STRATEGY_CHOICE_SESSION_KEY, COMPARE_LABEL))
+    if provision_choice not in {"P1", "P2", "P3", "O1", "O2", "O3", "N1", "N2", "N3", COMPARE_LABEL}:
+        provision_choice = COMPARE_LABEL
+
+    close_day_cap_rate = _session_float(
+        PACE_CLOSE_CAP_SESSION_KEY,
+        base_config.get("close_day_cap_rate", 1.30),
+    )
+    non_close_day_cap_rate = _session_float(
+        PACE_NON_CLOSE_CAP_SESSION_KEY,
+        base_config.get("non_close_day_cap_rate", 1.50),
+    )
+    config = build_runtime_config(
+        base_config,
+        close_day_cap_rate,
+        non_close_day_cap_rate,
+    )
+
+    st.session_state[PACE_METRIC_SESSION_KEY] = metric
+    st.session_state[PACE_AS_OF_DATE_SESSION_KEY] = as_of_date
+    st.session_state[PACE_FORECAST_CHOICE_SESSION_KEY] = forecast_choice
+    st.session_state[PACE_STRATEGY_CHOICE_SESSION_KEY] = provision_choice
+    st.session_state[PACE_CLOSE_CAP_SESSION_KEY] = close_day_cap_rate
+    st.session_state[PACE_NON_CLOSE_CAP_SESSION_KEY] = non_close_day_cap_rate
+    return metric, pd.Timestamp(as_of_date), forecast_choice, provision_choice, config
+
+
+def _session_float(key: str, default: object) -> float:
+    try:
+        return float(st.session_state.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _default_selected_scenario_id(
+    scenario_df: pd.DataFrame,
+    forecast_choice: str,
+    provision_choice: str,
+) -> str:
+    if scenario_df.empty or "scenario_id" not in scenario_df.columns:
+        return ""
+
+    candidates = _filter_scenarios(scenario_df, forecast_choice, provision_choice)
+    if candidates.empty:
+        candidates = scenario_df
+    scenario_ids = candidates["scenario_id"].astype(str).tolist()
+    stored = str(st.session_state.get(PACE_SELECTED_SCENARIO_SESSION_KEY, ""))
+    if stored in scenario_ids:
+        return stored
+    selected = scenario_ids[0]
+    st.session_state[PACE_SELECTED_SCENARIO_SESSION_KEY] = selected
+    return selected
+
+
+def _top_nav_meta(context: Mapping[str, Any]) -> dict[str, object]:
+    df = _as_dataframe(context.get("df"))
+    as_of_date = context.get("as_of_date")
+    selected_row = _as_series(context.get("selected_row"))
+    audit_readonly = bool(context.get("audit_readonly", False))
+    header_context = _pace_header_context(df, as_of_date)
+    target_month = "입력 후 계산됩니다"
+    try:
+        target_month = pd.Timestamp(as_of_date).strftime("%Y-%m")
+    except Exception:  # noqa: BLE001 - display fallback only.
+        pass
+    return {
+        "target_month": target_month,
+        "business_day": (
+            f"{header_context.get('current_business_day_no')} / "
+            f"{header_context.get('total_business_days')}"
+        ),
+        "close_day": header_context.get("close_day_label", "입력 후 계산됩니다"),
+        "operation_mode": (
+            "읽기 전용 감리 모드"
+            if audit_readonly
+            else status_label(selected_row.get("target_status")) or "로컬 운영"
+        ),
+    }
+
+
+def _render_same_window_side_nav(st_module: Any, active_page: str) -> None:
+    """Render primary navigation with Streamlit buttons and query-param routing."""
+    with st_module.sidebar:
+        st_module.markdown(
+            '<div class="nav-rail nav-rail--buttons">'
+            '<div class="nav-rail__title">페이지 이동</div>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        for page_key, definition in PAGE_DEFINITIONS.items():
+            is_active = page_key == active_page
+            label = definition["title"]
+            button_label = f"현재 · {label}" if is_active else str(label)
+            if st_module.button(
+                button_label,
+                key=f"same_window_nav_{page_key}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                _navigate_same_window(st_module, page_key)
+
+
+def _render_same_window_top_status(active_page: str, meta: Mapping[str, object]) -> None:
+    """Render status-only top navigation chrome without internal links."""
+    meta_items = (
+        ("기준월", meta.get("target_month", "입력 후 계산됩니다.")),
+        ("영업일", meta.get("business_day", "입력 후 계산됩니다.")),
+        ("마감일", meta.get("close_day", "입력 후 계산됩니다.")),
+        ("운영모드", meta.get("operation_mode", "로컬 운영")),
+    )
+    pills = "".join(
+        f'<span class="pace-pill{primary}">{escape(label)}: {escape(str(value))}</span>'
+        for index, (label, value) in enumerate(meta_items)
+        for primary in (" is-primary" if index == 0 else "",)
+    )
+    st.markdown(
+        '<section class="same-window-top-status">'
+        '<div class="same-window-top-status__brand">'
+        '<span class="pace-brand-mark"></span>'
+        '<span><strong>마감 페이스 체크</strong><small>한 창 안에서 페이지 이동</small></span>'
+        "</div>"
+        f'<div class="same-window-top-status__page">{escape(page_title(active_page))}</div>'
+        f'<div class="same-window-top-status__meta">{pills}</div>'
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _navigate_same_window(st_module: Any, page_key: object) -> None:
+    safe_page = str(page_key) if str(page_key) in PAGE_DEFINITIONS else "home"
+    st_module.session_state["pace_current_page"] = safe_page
+    audit_readonly = _is_audit_readonly_mode(st_module)
+    try:
+        st_module.query_params["page"] = safe_page
+        if audit_readonly:
+            st_module.query_params[AUDIT_READONLY_QUERY_PARAM] = "1"
+    except Exception:  # noqa: BLE001 - Streamlit compatibility only.
+        params = {"page": safe_page}
+        if audit_readonly:
+            params[AUDIT_READONLY_QUERY_PARAM] = "1"
+        st_module.experimental_set_query_params(**params)
+    _rerun_streamlit(st_module)
+
+
+def _rerun_streamlit(st_module: Any) -> None:
+    if hasattr(st_module, "rerun"):
+        st_module.rerun()
+    else:  # pragma: no cover - compatibility for older Streamlit runtimes.
+        st_module.experimental_rerun()
+
+
+def _is_audit_readonly_mode(st_module: Any) -> bool:
+    """Return True when the current request asks for read-only audit mode."""
+    try:
+        raw_value = st_module.query_params.get(AUDIT_READONLY_QUERY_PARAM, "")
+    except Exception:  # noqa: BLE001 - Streamlit compatibility only.
+        try:
+            raw_value = st_module.experimental_get_query_params().get(
+                AUDIT_READONLY_QUERY_PARAM,
+                "",
+            )
+        except Exception:  # noqa: BLE001 - missing query API in tests/fakes.
+            raw_value = ""
+
+    if isinstance(raw_value, (list, tuple)):
+        raw_value = raw_value[-1] if raw_value else ""
+    return str(raw_value).strip().lower() in AUDIT_READONLY_TRUE_VALUES
+
+
+def _render_audit_readonly_banner() -> None:
+    st.info(
+        "읽기 전용 감리 모드: 화면 조회, 페이지 이동, 캡처 중에는 "
+        "saved_actuals 저장, 예측 이력 저장, Excel 재생성을 비활성화합니다."
+    )
+
+
+def _expected_report_name(metric: str, as_of_date: object) -> str:
+    date_token = pd.Timestamp(as_of_date).strftime("%Y%m%d")
+    return f"daily_report_{metric}_{date_token}.xlsx"
+
+
+def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
+    """Render the A Workbench Compact home page with visual projection first."""
+    df = _as_dataframe(context.get("df"))
+    selected_row = _as_series(context.get("selected_row"))
+    validation_result = dict(context.get("validation_result") or {})
+    scenario_df = _as_dataframe(context.get("scenario_df"))
+    next_close_result = dict(context.get("next_close_result") or {})
+    report_text = str(context.get("report_text") or "입력 후 계산합니다.")
+    target_status = selected_row.get("target_status")
+
+    st.markdown(
+        """
+        <section class="workbench-shell top-status-bar">
+          <div class="page-header-compact">
+            <div>
+              <div class="page-header-compact__eyebrow">오늘의 마감 보드</div>
+              <h1>달성 추이 및 월말 예측 구간</h1>
+              <p>현재 누적 실적, 목표선, 예상 도착 구간을 첫 화면에서 바로 확인합니다.</p>
+            </div>
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    chart_col, decision_col = st.columns([0.68, 0.32], gap="large")
+    with chart_col:
+        _render_projection_chart_card(context)
+    with decision_col:
+        _render_home_decision_panel(selected_row, validation_result, next_close_result)
+
+    _render_home_status_facts(validation_result, selected_row, next_close_result)
+    render_next_action_panel("home", context)
+
+    _render_home_scenario_summary(
+        scenario_df,
+        str(context.get("selected_scenario_id") or ""),
+        target_status,
+    )
+    _render_home_overachievement_strategy_summary(
+        scenario_df,
+        str(context.get("selected_scenario_id") or ""),
+        target_status,
+    )
+
+    lower_cols = st.columns([0.62, 0.38], gap="large")
+    with lower_cols[0]:
+        preview = report_text.strip()
+        if len(preview) > 620:
+            preview = preview[:620].rstrip() + "\n..."
+        st.markdown(
+            render_section_header(
+                "보고 메모 preview",
+                "보고문 원문을 짧게 확인하고 상세 페이지에서 전체 문안을 검토합니다.",
+            ),
+            unsafe_allow_html=True,
+        )
+        st.markdown(render_report_card(preview or "예측 계산 후 보고 메모가 표시됩니다."), unsafe_allow_html=True)
+    with lower_cols[1]:
+        st.markdown(
+            render_section_header(
+                "Excel 공유 readiness",
+                "outputs/latest 기준 최신 공유본 안내와 archive_invalid 제외 원칙을 확인합니다.",
+            ),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            render_download_card(str(context.get("report_name") or "예측 계산 후 생성됩니다.")),
+            unsafe_allow_html=True,
+        )
+
+
+def _render_home_status_facts(
+    validation_result: Mapping[str, Any],
+    selected_row: pd.Series,
+    next_close_result: Mapping[str, Any],
+) -> None:
+    facts = (
+        ("target_status", _localize_display_value(selected_row.get("target_status"))),
+        ("target_variance", format_amount(selected_row.get("target_variance"))),
+        ("surplus_to_target", format_amount(selected_row.get("surplus_to_target"))),
+        (
+            "다음 마감 누적선 필요실적",
+            format_amount(next_close_result.get("required_to_recover_next_close_cum")),
+        ),
+        ("현재 누적 실적", format_amount(validation_result.get("current_actual_cum"))),
+    )
+    fact_html = "".join(
+        '<div class="metric-card-compact">'
+        f'<span>{escape(str(label))}</span>'
+        f'<strong>{escape(str(value))}</strong>'
+        "</div>"
+        for label, value in facts
+    )
+    st.markdown(f'<div class="workbench-fact-row">{fact_html}</div>', unsafe_allow_html=True)
+
+
+def _render_projection_chart_card(context: Mapping[str, Any]) -> None:
+    df = _as_dataframe(context.get("df"))
+    metric = str(context.get("metric") or "sales")
+    selected_row = _as_series(context.get("selected_row"))
+    scenario_df = _as_dataframe(context.get("scenario_df"))
+    as_of_date = context.get("as_of_date")
+    target_status = selected_row.get("target_status")
+    columns = get_metric_columns(metric)
+    current_day_no = _projection_current_day_no(df, as_of_date)
+    forecast_payload = _build_projection_forecast_payload(
+        scenario_df,
+        selected_row,
+        dict(context.get("forecast_result") or {}),
+    )
+    close_markers = build_close_day_markers(df, current_day_no=current_day_no)
+    projection_df = build_pace_projection_chart_data(
+        df,
+        forecast_payload,
+        target_status,
+        current_day_no=current_day_no,
+        target_daily_column=columns["target_daily"],
+        actual_cum_column=columns["actual_cum"],
+    )
+    if not projection_df.empty and not close_markers.empty:
+        next_days = close_markers.loc[
+            close_markers["is_next_close_day"],
+            "business_day_no",
+        ].astype(str)
+        if not next_days.empty:
+            projection_df["is_next_close_day"] = projection_df["business_day_no"].astype(str).isin(set(next_days))
+
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div class="projection-chart-card">
+              <div class="projection-chart-card__head">
+                <div>
+                  <div class="projection-chart-card__label">달성 추이 및 월말 예측 구간</div>
+                  <div class="projection-chart-card__copy">현재까지의 누적 실적 흐름과 기존 예측 모델을 기준으로 잔여 영업일의 예상 도착 구간을 표시합니다.</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if projection_df.empty:
+            st.info(str(projection_df.attrs.get("empty_state") or "예측 계산 후 Projection 차트를 표시합니다."))
+        else:
+            _render_pace_projection_chart(projection_df)
+            _render_projection_interpretation(projection_df, selected_row)
+
+
+def _build_projection_forecast_payload(
+    scenario_df: pd.DataFrame,
+    selected_row: pd.Series,
+    forecast_result: Mapping[str, Any],
+) -> dict[str, object]:
+    summary = _forecast_summary(scenario_df)
+    return {
+        "F1": summary.get("F1"),
+        "F2": summary.get("F2"),
+        "F3": summary.get("F3"),
+        "forecast_mid": forecast_result.get(
+            "forecast_amount",
+            selected_row.get("forecast_amount", selected_row.get("forecast_after_provision")),
+        ),
+    }
+
+
+def _projection_current_day_no(df: pd.DataFrame, as_of_date: object) -> object | None:
+    if df.empty or "date" not in df.columns or "business_day_no" not in df.columns:
+        return None
+    try:
+        dates = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+        as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    except Exception:  # noqa: BLE001 - display fallback only.
+        return None
+    rows = df.loc[dates == as_of_timestamp]
+    if rows.empty:
+        return None
+    return rows.iloc[-1].get("business_day_no")
+
+
+def _render_pace_projection_chart(source: pd.DataFrame) -> None:
+    chart_source = source.copy()
+    chart_font = '-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif'
+    chart_source["date"] = pd.to_datetime(chart_source["date"], errors="coerce")
+    chart_source["date_label"] = chart_source["date"].dt.strftime("%Y-%m-%d")
+    for column in (
+        "business_day_no",
+        "actual_cum",
+        "target_cum",
+        "forecast_low",
+        "forecast_mid",
+        "forecast_high",
+        "projection_mid",
+    ):
+        chart_source[column] = pd.to_numeric(chart_source[column], errors="coerce")
+
+    chart_source = chart_source.dropna(subset=["business_day_no", "date"])
+    if chart_source.empty:
+        st.info("현재 누적 실적이 입력되면 실제 추이선이 표시됩니다.")
+        return
+
+    tooltip = [
+        alt.Tooltip("business_day_no:Q", title="영업일차"),
+        alt.Tooltip("date_label:N", title="날짜"),
+        alt.Tooltip("target_cum:Q", title="누적 목표선", format=chart_value_format("억원")),
+        alt.Tooltip("actual_cum:Q", title="현재까지 확정 실적", format=chart_value_format("억원")),
+        alt.Tooltip("projection_mid:Q", title="향후 예측 중심선", format=chart_value_format("억원")),
+        alt.Tooltip("forecast_low:Q", title="예상 도착 구간 하단", format=chart_value_format("억원")),
+        alt.Tooltip("forecast_high:Q", title="예상 도착 구간 상단", format=chart_value_format("억원")),
+        alt.Tooltip("is_close_day:N", title="is_close_day"),
+        alt.Tooltip("zone:N", title="구간"),
+    ]
+    business_days = chart_source["business_day_no"].dropna()
+    min_business_day = max(1, int(math.floor(float(business_days.min()))))
+    max_business_day = max(min_business_day, int(math.ceil(float(business_days.max()))))
+    x_axis = alt.Axis(
+        title=None,
+        tickMinStep=1,
+        values=list(range(min_business_day, max_business_day + 1)),
+        labelAngle=0,
+        labelExpr="format(datum.value, 'd') + 'WD'",
+        grid=False,
+    )
+    x_left_padding = 0.35
+    x_scale = alt.Scale(
+        domain=[max(0.5, min_business_day - x_left_padding), max_business_day],
+        nice=False,
+        zero=False,
+    )
+    x_encoding = alt.X(
+        "business_day_no:Q",
+        title=None,
+        axis=x_axis,
+        scale=x_scale,
+    )
+    y_axis_hidden = alt.Axis(
+        title=None,
+        labels=False,
+        ticks=False,
+        domain=False,
+        grid=False,
+    )
+    y_encoding = alt.Y(
+        "value:Q",
+        title=None,
+        axis=y_axis_hidden,
+        scale=_projection_value_scale(chart_source),
+    )
+    projection_zoom = alt.selection_interval(
+        bind="scales",
+        encodings=["x", "y"],
+        name="projection_zoom",
+    )
+    projection_hover = alt.selection_point(
+        fields=["business_day_no"],
+        nearest=True,
+        on="pointerover",
+        clear="pointerout",
+        empty=False,
+        name="projection_hover",
+    )
+    projection_click = alt.selection_point(
+        fields=["business_day_no"],
+        nearest=True,
+        on="click",
+        clear="dblclick",
+        empty=False,
+        name="projection_click",
+    )
+
+    band_source = chart_source.loc[chart_source["is_projection_period"]].dropna(
+        subset=["forecast_low", "forecast_high"]
+    )
+    actual_source = chart_source.loc[chart_source["actual_cum"].notna()]
+    projection_source = chart_source.loc[chart_source["projection_mid"].notna()]
+    current_source = chart_source.loc[chart_source["is_current_point"]]
+    next_close_source = chart_source.loc[chart_source["is_next_close_day"]]
+
+    target_source = chart_source.copy()
+    target_source["value"] = target_source["target_cum"]
+    actual_line_source = actual_source.copy()
+    actual_line_source["value"] = actual_line_source["actual_cum"]
+    projection_line_source = projection_source.copy()
+    projection_line_source["value"] = projection_line_source["projection_mid"]
+    guide_source = chart_source.copy()
+    guide_source["value"] = guide_source["actual_cum"].combine_first(
+        guide_source["projection_mid"]
+    ).combine_first(guide_source["target_cum"])
+
+    band = (
+        alt.Chart(band_source)
+        .mark_area(color="#b7791f", opacity=0.16, interpolate="linear")
+        .encode(
+            x=x_encoding,
+            y=alt.Y(
+                "forecast_low:Q",
+                title=None,
+                axis=y_axis_hidden,
+                scale=_projection_value_scale(chart_source),
+            ),
+            y2="forecast_high:Q",
+            tooltip=tooltip,
+        )
+    )
+    target_line = (
+        alt.Chart(target_source)
+        .mark_line(color="#8a94a1", strokeDash=[7, 4], strokeWidth=2.1)
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    actual_line = (
+        alt.Chart(actual_line_source)
+        .mark_line(color="#14756f", strokeWidth=3.3, interpolate="linear")
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    actual_points = (
+        alt.Chart(actual_line_source)
+        .mark_point(color="#14756f", filled=True, size=38, opacity=0.92)
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    projection_line = (
+        alt.Chart(projection_line_source)
+        .mark_line(color="#b7791f", strokeDash=[6, 4], strokeWidth=2.8, interpolate="linear")
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    projection_points = (
+        alt.Chart(projection_line_source)
+        .mark_point(color="#b7791f", filled=True, size=28, opacity=0.82)
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    current_point_source = current_source.copy()
+    current_point_source["value"] = current_point_source["actual_cum"]
+    current_point_source["marker_label"] = "현재 위치"
+    current_point = (
+        alt.Chart(current_point_source)
+        .mark_point(color="#202833", filled=True, size=125)
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    current_label = (
+        alt.Chart(current_point_source)
+        .mark_text(
+            align="left",
+            baseline="middle",
+            dx=8,
+            dy=-16,
+            font=chart_font,
+            fontSize=12,
+            fontWeight=700,
+            color="#202833",
+        )
+        .encode(x=x_encoding, y=y_encoding, text="marker_label:N", tooltip=tooltip)
+    )
+    next_close_rule = (
+        alt.Chart(next_close_source)
+        .mark_rule(color="#536170", strokeDash=[3, 3], strokeWidth=2.1)
+        .encode(x=x_encoding, tooltip=tooltip)
+    )
+    next_close_point_source = next_close_source.copy()
+    next_close_point_source["value"] = next_close_point_source["target_cum"]
+    next_close_point_source["marker_label"] = "다음 마감"
+    next_close_point = (
+        alt.Chart(next_close_point_source)
+        .mark_point(color="#536170", filled=True, size=108, shape="triangle-up")
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+    )
+    next_close_label = (
+        alt.Chart(next_close_point_source)
+        .mark_text(
+            align="left",
+            baseline="middle",
+            dx=8,
+            dy=16,
+            font=chart_font,
+            fontSize=12,
+            fontWeight=700,
+            color="#536170",
+        )
+        .encode(x=x_encoding, y=y_encoding, text="marker_label:N", tooltip=tooltip)
+    )
+    guide_selector = (
+        alt.Chart(guide_source)
+        .mark_rule(opacity=0.001, strokeWidth=24)
+        .encode(x=x_encoding, tooltip=tooltip)
+        .add_params(projection_hover, projection_click)
+    )
+    hover_guide = (
+        alt.Chart(guide_source)
+        .mark_rule(color="#1f2937", strokeWidth=1.5, opacity=0.45)
+        .encode(x=x_encoding, tooltip=tooltip)
+        .transform_filter(projection_hover)
+    )
+    click_guide = (
+        alt.Chart(guide_source)
+        .mark_rule(color="#0f766e", strokeWidth=2.2, opacity=0.72)
+        .encode(x=x_encoding, tooltip=tooltip)
+        .transform_filter(projection_click)
+    )
+    hover_point = (
+        alt.Chart(guide_source)
+        .mark_point(color="#1f2937", filled=True, size=70, opacity=0.78)
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+        .transform_filter(projection_hover)
+    )
+    click_point = (
+        alt.Chart(guide_source)
+        .mark_point(color="#0f766e", filled=True, size=90, opacity=0.92)
+        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+        .transform_filter(projection_click)
+    )
+
+    chart = (
+        (
+            band
+            + target_line
+            + actual_line
+            + actual_points
+            + projection_line
+            + projection_points
+            + next_close_rule
+            + next_close_point
+            + next_close_label
+            + current_point
+            + current_label
+            + hover_guide
+            + click_guide
+            + hover_point
+            + click_point
+            + guide_selector
+        )
+        .add_params(projection_zoom)
+        .properties(height=320, background="#f7f9fb")
+        .configure(background="#f7f9fb")
+        .configure_axis(
+            labelFont=chart_font,
+            titleFont=chart_font,
+            labelFontSize=11,
+            titleFontSize=12,
+            labelColor="#65717f",
+            titleColor="#65717f",
+            grid=False,
+            domain=False,
+        )
+        .configure_legend(
+            labelFont=chart_font,
+            titleFont=chart_font,
+            labelFontSize=12,
+            titleFontSize=12,
+        )
+        .configure_title(font=chart_font, fontSize=14, fontWeight=700)
+        .configure_view(strokeWidth=0, fill="#f7f9fb")
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.markdown(
+        """
+        <div class="chart-legend-row">
+          <span><i class="legend-target"></i>누적 목표선</span>
+          <span><i class="legend-actual"></i>현재까지 확정 실적</span>
+          <span><i class="legend-projection"></i>향후 예측 중심선</span>
+          <span><i class="legend-band"></i>예상 도착 구간</span>
+          <span><i class="legend-current"></i>현재 위치</span>
+          <span><i class="legend-close"></i>다음 마감</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _projection_value_scale(chart_source: pd.DataFrame) -> alt.Scale:
+    values = pd.concat(
+        [
+            pd.to_numeric(chart_source[column], errors="coerce")
+            for column in (
+                "actual_cum",
+                "target_cum",
+                "forecast_low",
+                "forecast_mid",
+                "forecast_high",
+                "projection_mid",
+            )
+            if column in chart_source.columns
+        ],
+        ignore_index=True,
+    ).dropna()
+    if values.empty:
+        return alt.Scale(zero=True)
+    lower = max(0.0, float(values.min()) * 0.94)
+    upper = float(values.max()) * 1.06
+    if math.isclose(lower, upper):
+        upper = lower + 1.0
+    return alt.Scale(domain=[lower, upper], nice=True)
+
+
+def _render_projection_interpretation(
+    projection_df: pd.DataFrame,
+    selected_row: pd.Series,
+) -> None:
+    status = str(selected_row.get("target_status") or "UNKNOWN_TARGET_STATUS")
+    variance = selected_row.get("target_variance")
+    low = projection_df.attrs.get("forecast_low_final")
+    mid = projection_df.attrs.get("forecast_mid_final")
+    high = projection_df.attrs.get("forecast_high_final")
+    caption = (
+        "현재 흐름은 목표선 대비 "
+        f"{_format_signed_amount(variance)} 수준이며, "
+        f"월말 예상 도착 구간은 {_target_status_arrival_label(status)}입니다. "
+        f"예상 도착 구간: {format_amount(low)} ~ {format_amount(high)}, 중심선 {format_amount(mid)}."
+    )
+    st.markdown(
+        f'<div class="projection-chart-caption">{escape(caption)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _target_status_arrival_label(target_status: object) -> str:
+    labels = {
+        "UNDER_TARGET": "UNDER_TARGET 목표선 미달 구간",
+        "ON_TARGET": "ON_TARGET 계획선 근접 구간",
+        "OVER_TARGET": "OVER_TARGET 초과달성 관리 구간",
+    }
+    return labels.get(str(target_status), "계산 확인 구간")
+
+
+def _render_home_decision_panel(
+    selected_row: pd.Series,
+    validation_result: Mapping[str, Any],
+    next_close_result: Mapping[str, Any],
+) -> None:
+    target_status = selected_row.get("target_status")
+    scenario_id = str(selected_row.get("scenario_id") or "")
+    _forecast_key, strategy_key = _split_scenario_id(scenario_id)
+    strategy_name = SCENARIO_STRATEGY_DEFINITIONS.get(strategy_key, {}).get(
+        "name",
+        scenario_id or "예측 계산 후 표시",
+    )
+    risk_level = _localize_display_value(selected_row.get("risk_level", "N/A"))
+    status = _localize_display_value(selected_row.get("status", ""))
+    decision_rows = (
+        ("목표 상태", _localize_display_value(target_status)),
+        ("월마감 예상", format_amount(selected_row.get("forecast_after_provision"))),
+        ("목표 대비 차이", _format_signed_amount(selected_row.get("target_variance"))),
+        (
+            "다음 마감 누적선 필요실적",
+            format_amount(next_close_result.get("required_to_recover_next_close_cum")),
+        ),
+        ("운영모드", _operation_mode_label(target_status)),
+        ("권장 전략", f"{strategy_key or '-'} {strategy_name}"),
+        ("리스크 메모", f"{risk_level} / {status}"),
+        ("다음 액션", _home_next_action_text(target_status, validation_result, next_close_result)),
+    )
+    rows_html = "".join(
+        '<div class="decision-panel__row">'
+        f'<span>{escape(str(label))}</span>'
+        f'<strong>{escape(str(value))}</strong>'
+        "</div>"
+        for label, value in decision_rows
+    )
+    st.markdown(
+        '<aside class="decision-panel">'
+        '<div class="decision-panel__label">Next Action Panel</div>'
+        '<h2>오늘 판단 카드</h2>'
+        f"{rows_html}"
+        "</aside>",
+        unsafe_allow_html=True,
+    )
+
+
+def _home_next_action_text(
+    target_status: object,
+    validation_result: Mapping[str, Any],
+    next_close_result: Mapping[str, Any],
+) -> str:
+    _ = validation_result
+    required = _as_float(next_close_result.get("required_to_recover_next_close_cum"))
+    if str(target_status) == "UNDER_TARGET":
+        if math.isfinite(required) and required > 0:
+            return f"다음 마감일까지 누적선 기준 {format_amount(required)} 확보 계획을 먼저 확인합니다."
+        return "잔여 목표 보정전략 P1/P2/P3 중 실행 부담이 낮은 안을 확인합니다."
+    if str(target_status) == "OVER_TARGET":
+        return "O1 버퍼 유지, O2 Stretch 전환, O3 품질 방어 중 보고 기준을 선택합니다."
+    if str(target_status) == "ON_TARGET":
+        return "현재 계획선을 유지하면서 다음 마감일 입력 누락 여부를 점검합니다."
+    return "입력 검증 후 예측 계산을 다시 실행합니다."
+
+
+def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
+    """Render the compact next action panel shared by all workbench pages."""
+    validation_result = dict(context.get("validation_result") or {})
+    selected_row = _as_series(context.get("selected_row"))
+    next_close_result = dict(context.get("next_close_result") or {})
+    target_status = selected_row.get("target_status")
+    page_label = {
+        "home": "홈",
+        "input": "입력 · 데이터",
+        "forecast": "KPI · 예측",
+        "scenarios": "시나리오",
+        "report": "보고 메모",
+        "history": "예측 이력",
+        "excel": "Excel 공유",
+        "audit": "검증 · 운영관리",
+    }.get(page_key, page_key)
+    action_items = {
+        "home": (
+            _home_next_action_text(target_status, validation_result, next_close_result),
+            "KPI · 예측에서 target_status와 모델별 월마감 예상값을 확인합니다.",
+        ),
+        "input": (
+            "누락 행, 빈 누적 실적, is_close_day 입력 상태를 먼저 확인합니다.",
+            "입력 검증 오류가 없으면 KPI · 예측으로 이동합니다.",
+        ),
+        "forecast": (
+            "target_status와 다음 마감 누적선 필요실적을 확인합니다.",
+            "F1/F2/F3 차이를 본 뒤 시나리오 전략 보기로 이동합니다.",
+        ),
+        "scenarios": (
+            "운영안 후보를 하나 선택하고 P1/P2/P3, O1/O2/O3 참고 카드를 함께 비교합니다.",
+            "보고 메모에서 선택 전략의 문구와 리스크 설명을 확인합니다.",
+        ),
+        "report": (
+            "보고 메모 원문을 복사용 영역에서 확인합니다.",
+            "Excel 공유 페이지에서 기존 outputs/latest 산출물만 다운로드합니다.",
+        ),
+        "history": (
+            "완료월 비교와 현재 예측 신뢰도 흐름을 확인합니다.",
+            "필요할 때만 예측 이력 저장 버튼을 사용합니다.",
+        ),
+        "excel": (
+            "outputs/latest 파일 목록과 수정시각을 읽기 전용으로 확인합니다.",
+            "최신 리포트 재생성은 명시적 버튼 클릭 시에만 실행합니다.",
+        ),
+        "audit": (
+            "pytest, Gate Runner, forbidden scan의 U03-A1.1 로그 상태를 확인합니다.",
+            "화면 캡처 감리와 Auth Gate 후속 복원 항목을 분리해 관리합니다.",
+        ),
+    }.get(page_key, ("현재 페이지의 입력과 계산 상태를 확인합니다.",))
+    items_html = "".join(f"<li>{escape(str(item))}</li>" for item in action_items)
+    st.markdown(
+        '<aside class="next-action-panel">'
+        f'<div class="next-action-panel__label">다음 액션 · next action</div>'
+        f"<h3>{escape(page_label)} 작업 흐름</h3>"
+        f"<ul>{items_html}</ul>"
+        "</aside>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_home_scenario_summary(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+    target_status: object,
+) -> None:
+    _ = selected_scenario_id, target_status
+    st.markdown(
+        render_section_header(
+            "시나리오 요약 3개",
+            "F1/F2/F3 예측모델별 최종 실적 가능성과 목표 대비 차이를 비교합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    if scenario_df.empty:
+        st.info("예측 계산 후 시나리오 요약이 표시됩니다.")
+        return
+
+    summary_rows = build_home_forecast_model_summary(scenario_df)
+    if summary_rows.empty:
+        st.info("F1/F2/F3 예측모델별 요약 데이터가 없습니다.")
+        return
+
+    display_rows = _dedupe_converged_forecast_summary_rows(summary_rows)
+    cards = "".join(
+        _render_forecast_model_summary_card(row)
+        for row in display_rows.to_dict("records")
+    )
+    st.markdown(f'<div class="strategy-card-row">{cards}</div>', unsafe_allow_html=True)
+
+
+def _render_home_overachievement_strategy_summary(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+    target_status: object,
+) -> None:
+    over_rows = build_home_overachievement_strategy_summary(
+        scenario_df,
+        selected_scenario_id,
+    )
+    if over_rows.empty:
+        return
+
+    state_note = (
+        "현재 관리 대상"
+        if str(target_status) == "OVER_TARGET"
+        else "현재 상태에서는 참고용"
+    )
+    cards = "".join(
+        _render_overachievement_strategy_summary_card(row)
+        for row in over_rows.to_dict("records")
+    )
+    st.markdown(
+        render_section_header(
+            "초과달성 운영전략",
+            "O1/O2/O3는 같은 base forecast를 반복하지 않고 버퍼, Stretch, 품질 방어 지표로 분리합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<section class="strategy-section is-active-management">'
+        '<div class="strategy-section__head">'
+        '<div><div class="strategy-section__status">OVER_TARGET</div>'
+        '<p>기준 F예측값은 참고값으로 두고, 전략별 운영 기준값과 여유분을 비교합니다.</p></div>'
+        f'<span>{escape(state_note)}</span>'
+        "</div>"
+        f'<div class="strategy-section__cards">{cards}</div>'
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+FORECAST_MODEL_SUMMARY_COLUMNS = (
+    "forecast_key",
+    "forecast_model",
+    "model_name",
+    "expected_month_end_amount",
+    "target_variance",
+    "target_status",
+    "recommended_action",
+    "convergence_notice",
+)
+
+
+OVERACHIEVEMENT_SUMMARY_COLUMNS = (
+    "scenario_id",
+    "forecast_key",
+    "strategy_key",
+    "base_forecast_amount",
+    "strategy_expected_amount",
+    "target_variance_after_strategy",
+    "surplus_buffer",
+    "stretch_uplift",
+    "revised_monthly_target",
+    "relief_amount",
+    "recommended_action",
+    "target_status",
+)
+
+
+def build_home_forecast_model_summary(scenario_df: pd.DataFrame) -> pd.DataFrame:
+    """Return one F1/F2/F3 forecast row per model for the home summary cards."""
+    if scenario_df.empty or "scenario_id" not in scenario_df.columns:
+        return pd.DataFrame(columns=FORECAST_MODEL_SUMMARY_COLUMNS)
+
+    rows: list[dict[str, object]] = []
+    for forecast_key in ("F1", "F2", "F3"):
+        model_df = _scenario_df_for_forecast_key(scenario_df, forecast_key)
+        if model_df.empty:
+            continue
+        row = model_df.iloc[0]
+        target_status_value = row.get("target_status")
+        rows.append(
+            {
+                "forecast_key": forecast_key,
+                "forecast_model": FORECAST_MODEL_OPTIONS.get(forecast_key, forecast_key),
+                "model_name": FORECAST_MODEL_DEFINITIONS.get(forecast_key, {}).get(
+                    "name",
+                    forecast_key,
+                ),
+                "expected_month_end_amount": row.get("forecast_amount"),
+                "target_variance": row.get("target_variance"),
+                "target_status": target_status_value,
+                "recommended_action": _recommended_strategy_for_target_status(
+                    target_status_value
+                ),
+                "convergence_notice": "",
+            }
+        )
+    return pd.DataFrame(rows, columns=FORECAST_MODEL_SUMMARY_COLUMNS)
+
+
+def build_home_overachievement_strategy_summary(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> pd.DataFrame:
+    """Return O1/O2/O3 display rows with strategy-specific operating values."""
+    if scenario_df.empty or "scenario_id" not in scenario_df.columns:
+        return pd.DataFrame(columns=OVERACHIEVEMENT_SUMMARY_COLUMNS)
+
+    forecast_key = _selected_forecast_key(selected_scenario_id) or "F1"
+    rows = scenario_df.loc[
+        scenario_df["scenario_id"].astype(str).map(
+            lambda value: _split_scenario_id(value)[1] in {"O1", "O2", "O3"}
+        )
+    ].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=OVERACHIEVEMENT_SUMMARY_COLUMNS)
+
+    focused = rows.loc[rows["scenario_id"].astype(str).str.startswith(f"{forecast_key}_")]
+    if focused.empty:
+        forecast_key = _split_scenario_id(str(rows.iloc[0].get("scenario_id") or ""))[0]
+        focused = rows.loc[rows["scenario_id"].astype(str).str.startswith(f"{forecast_key}_")]
+    if focused.empty:
+        focused = rows
+
+    result_rows: list[dict[str, object]] = []
+    for strategy_key in ("O1", "O2", "O3"):
+        matches = focused.loc[
+            focused["scenario_id"].astype(str).map(
+                lambda value: _split_scenario_id(value)[1] == strategy_key
+            )
+        ]
+        if matches.empty:
+            continue
+        row = matches.iloc[0]
+        base_forecast = _first_finite_amount(
+            row.get("forecast_amount"),
+            row.get("forecast_after_provision"),
+        )
+        strategy_expected = _strategy_expected_amount_for_overachievement(row)
+        revised_target = _first_finite_amount(
+            row.get("revised_monthly_target"),
+            row.get("monthly_target"),
+        )
+        target_variance_after_strategy = _amount_difference(
+            strategy_expected,
+            revised_target,
+        )
+        result_rows.append(
+            {
+                "scenario_id": row.get("scenario_id"),
+                "forecast_key": _split_scenario_id(str(row.get("scenario_id") or ""))[0],
+                "strategy_key": strategy_key,
+                "base_forecast_amount": base_forecast,
+                "strategy_expected_amount": strategy_expected,
+                "target_variance_after_strategy": target_variance_after_strategy,
+                "surplus_buffer": row.get("remaining_surplus_buffer"),
+                "stretch_uplift": row.get("stretch_uplift"),
+                "revised_monthly_target": row.get("revised_monthly_target"),
+                "relief_amount": row.get("relief_amount"),
+                "recommended_action": row.get("recommended_action"),
+                "target_status": row.get("target_status"),
+            }
+        )
+
+    return pd.DataFrame(result_rows, columns=OVERACHIEVEMENT_SUMMARY_COLUMNS)
+
+
+def _dedupe_converged_forecast_summary_rows(summary_rows: pd.DataFrame) -> pd.DataFrame:
+    if summary_rows.empty or "expected_month_end_amount" not in summary_rows.columns:
+        return summary_rows
+
+    working = summary_rows.copy()
+    working["_convergence_key"] = working["expected_month_end_amount"].map(
+        _forecast_convergence_key
+    )
+    display_rows: list[dict[str, object]] = []
+    for _, group in working.groupby("_convergence_key", sort=False, dropna=False):
+        group = group.drop(columns=["_convergence_key"], errors="ignore")
+        first = group.iloc[0].to_dict()
+        if len(group) > 1:
+            forecast_keys = "/".join(group["forecast_key"].astype(str).tolist())
+            model_ids = " / ".join(group["forecast_model"].astype(str).tolist())
+            first.update(
+                {
+                    "forecast_key": forecast_keys,
+                    "forecast_model": model_ids,
+                    "model_name": "예측값 수렴",
+                    "recommended_action": (
+                        f"{forecast_keys} 예측값이 같은 구간입니다. "
+                        "중복 카드 대신 하나의 수렴 카드로 보고 운영전략을 선택합니다."
+                    ),
+                    "convergence_notice": "예측값 수렴",
+                }
+            )
+        display_rows.append(first)
+    return pd.DataFrame(display_rows, columns=FORECAST_MODEL_SUMMARY_COLUMNS)
+
+
+def _render_forecast_model_summary_card(row: Mapping[str, object]) -> str:
+    target_status_value = row.get("target_status")
+    notice = str(row.get("convergence_notice") or "")
+    notice_html = (
+        f'<div class="scenario-card__group">{escape(notice)}</div>' if notice else ""
+    )
+    metrics = (
+        ("forecast_model", row.get("forecast_model")),
+        ("model_name", row.get("model_name")),
+        ("expected_month_end_amount", format_amount(row.get("expected_month_end_amount"))),
+        ("target_variance", format_amount(row.get("target_variance"))),
+        ("target_status", row.get("target_status")),
+        ("추천 운영전략", row.get("recommended_action")),
+    )
+    metrics_html = "".join(
+        '<div class="scenario-card__metric">'
+        f'<div class="scenario-card__metric-label">{escape(str(label))}</div>'
+        f'<div class="scenario-card__metric-value">{escape(str(value))}</div>'
+        "</div>"
+        for label, value in metrics
+    )
+    return (
+        '<article class="scenario-card scenario-card--neutral forecast-summary-card">'
+        '<div class="scenario-card__topline">'
+        f'<div><div class="scenario-card__id">{escape(str(row.get("forecast_key") or ""))}</div>'
+        f"{notice_html}</div>"
+        f"{render_status_badge(target_status_value)}"
+        "</div>"
+        f'<div class="scenario-card__name">{escape(str(row.get("model_name") or ""))}</div>'
+        f'<div class="scenario-card__description">{escape(str(row.get("recommended_action") or ""))}</div>'
+        f'<div class="scenario-card__metrics">{metrics_html}</div>'
+        "</article>"
+    )
+
+
+def _render_overachievement_strategy_summary_card(row: Mapping[str, object]) -> str:
+    strategy_key = str(row.get("strategy_key") or "")
+    definition = OVERACHIEVEMENT_STRATEGY_DEFINITIONS.get(strategy_key, {})
+    detail_label, detail_value = _overachievement_summary_detail_metric(row, strategy_key)
+    metrics = (
+        ("운영 기준 목표", format_amount(row.get("revised_monthly_target"))),
+        (detail_label, format_amount(detail_value)),
+        ("기준 F예측값", format_amount(row.get("base_forecast_amount"))),
+        (
+            "전략 적용 후 차이",
+            format_amount(row.get("target_variance_after_strategy")),
+        ),
+    )
+    metrics_html = "".join(
+        '<div class="scenario-card__metric">'
+        f'<div class="scenario-card__metric-label">{escape(str(label))}</div>'
+        f'<div class="scenario-card__metric-value">{escape(str(value))}</div>'
+        "</div>"
+        for label, value in metrics
+    )
+    kind_class = strategy_key.lower() if strategy_key in {"O1", "O2", "O3"} else "neutral"
+    return (
+        f'<article class="scenario-card scenario-card--{escape(kind_class)} is-emphasis">'
+        '<div class="scenario-card__topline">'
+        f'<div><div class="scenario-card__id">{escape(str(row.get("scenario_id") or strategy_key))}</div>'
+        '<div class="scenario-card__group">초과달성 운영전략</div></div>'
+        f"{render_status_badge(row.get('target_status'))}"
+        "</div>"
+        f'<div class="scenario-card__name">{escape(strategy_key)} {escape(str(definition.get("name", strategy_key)))}</div>'
+        f'<div class="scenario-card__description">{escape(str(definition.get("description", "")))}</div>'
+        f'<div class="scenario-card__metrics">{metrics_html}</div>'
+        "</article>"
+    )
+
+
+def _overachievement_summary_detail_metric(
+    row: Mapping[str, object],
+    strategy_key: str,
+) -> tuple[str, object]:
+    if strategy_key == "O2":
+        return "Stretch 전환분", row.get("stretch_uplift")
+    if strategy_key == "O3":
+        return "품질관리 여유분", row.get("relief_amount")
+    return "잔여 안전버퍼", row.get("surplus_buffer")
+
+
+def _recommended_strategy_for_target_status(target_status: object) -> str:
+    status = "" if _is_missing(target_status) else str(target_status)
+    if status == "OVER_TARGET":
+        return "O1 버퍼 유지, O2 Stretch 전환, O3 품질 방어 중 운영 기준을 선택합니다."
+    if status == "ON_TARGET":
+        return "N1 목표 유지, N2 버퍼 모니터링, N3 품질 점검으로 변동 리스크를 봅니다."
+    if status == "UNDER_TARGET":
+        return "P1 전체 잔여일, P2 마감일 우선, P3 비마감일 우선 보정 전략을 비교합니다."
+    return "입력값과 예측 상태를 확인한 뒤 운영전략을 선택합니다."
+
+
+def _strategy_expected_amount_for_overachievement(row: Mapping[str, object]) -> float:
+    scenario_id = str(row.get("scenario_id") or "")
+    strategy_key = _split_scenario_id(scenario_id)[1]
+    base_forecast = _first_finite_amount(
+        row.get("forecast_amount"),
+        row.get("forecast_after_provision"),
+    )
+    monthly_target = _as_float(row.get("monthly_target"))
+    revised_target = _as_float(row.get("revised_monthly_target"))
+    current_actual = _as_float(row.get("current_actual_cum"))
+    minimum_remaining = _as_float(row.get("minimum_remaining_to_hit_target"))
+
+    if strategy_key == "O2" and math.isfinite(revised_target):
+        return revised_target
+    if strategy_key == "O3":
+        if math.isfinite(current_actual) and math.isfinite(minimum_remaining):
+            return current_actual + max(0.0, minimum_remaining)
+        if math.isfinite(monthly_target):
+            return monthly_target
+    return base_forecast
+
+
+def _first_finite_amount(*values: object) -> float:
+    for value in values:
+        number = _as_float(value)
+        if math.isfinite(number):
+            return number
+    return float("nan")
+
+
+def _amount_difference(left: object, right: object) -> float:
+    left_number = _as_float(left)
+    right_number = _as_float(right)
+    if math.isfinite(left_number) and math.isfinite(right_number):
+        return left_number - right_number
+    return float("nan")
+
+
+def _forecast_convergence_key(value: object) -> object:
+    number = _as_float(value)
+    if math.isfinite(number):
+        return round(number, 6)
+    return str(value)
+
+
+def _render_strategy_reference_sections(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+    target_status: object,
+) -> None:
+    """Render visible strategy cards for under, over, and neutral states."""
+    st.markdown(
+        render_section_header(
+            "전략 카드 전체 보기",
+            "현재 상태와 무관하게 P1/P2/P3, O1/O2/O3, ON_TARGET / Neutral 전략을 참고용으로 함께 표시합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    if scenario_df.empty:
+        st.info("시나리오 계산 후 전략 카드가 표시됩니다.")
+        return
+
+    forecast_key = _selected_forecast_key(selected_scenario_id) or "F1"
+    _, selected_strategy_key = _split_scenario_id(selected_scenario_id)
+    sections = (
+        {
+            "status": "UNDER_TARGET",
+            "title": "UNDER_TARGET",
+            "caption": "목표 미달 시 잔여 목표를 보정하는 P1/P2/P3 전략입니다.",
+            "suffixes": ("P1", "P2", "P3"),
+            "full_ids": {
+                "P1": P1_ALL_REMAINING,
+                "P2": P2_CLOSE_DAY_FOCUSED,
+                "P3": P3_NON_CLOSE_DAY_FOCUSED,
+            },
+        },
+        {
+            "status": "OVER_TARGET",
+            "title": "OVER_TARGET",
+            "caption": "초과달성 구간에서 버퍼, Stretch 전환, 품질 방어를 분리해 봅니다.",
+            "suffixes": ("O1", "O2", "O3"),
+            "full_ids": {
+                "O1": O1_TARGET_HOLD_BUFFER,
+                "O2": O2_STRETCH_TARGET_CAPTURE,
+                "O3": O3_QUALITY_GUARD_RELIEF,
+            },
+        },
+        {
+            "status": "ON_TARGET",
+            "title": "ON_TARGET / Neutral",
+            "caption": "목표 근접 구간에서는 유지, 모니터링, 품질 점검 전략을 참고합니다.",
+            "suffixes": ("N1", "N2", "N3"),
+            "full_ids": {
+                "N1": N1_MAINTAIN_TARGET,
+                "N2": N2_MONITOR_BUFFER,
+                "N3": N3_QUALITY_CHECK,
+            },
+        },
+    )
+    for section in sections:
+        is_active = str(target_status) == section["status"]
+        section_class = " is-active-management" if is_active else ""
+        state_label = "현재 관리 대상" if is_active else "현재 상태에서는 참고용"
+        cards_html = _strategy_section_cards_html(
+            scenario_df,
+            forecast_key,
+            tuple(section["suffixes"]),
+            dict(section["full_ids"]),
+            is_active=is_active,
+            selected_strategy_key=selected_strategy_key,
+        )
+        st.markdown(
+            f'<section class="strategy-section{section_class}">'
+            '<div class="strategy-section__head">'
+            f'<div><div class="strategy-section__status">{escape(str(section["title"]))}</div>'
+            f'<p>{escape(str(section["caption"]))}</p></div>'
+            f'<span>{escape(state_label)}</span>'
+            "</div>"
+            f'<div class="strategy-section__cards">{cards_html}</div>'
+            "</section>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_strategy_arrival_inline_summary(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+) -> None:
+    source = build_strategy_arrival_compare_source(scenario_df, selected_scenario_id)
+    if source.empty:
+        st.info("전략별 월말 도착점 compact chart는 시나리오 계산 후 표시됩니다.")
+        return
+
+    source = source.copy()
+    source["strategy_label"] = source["strategy_key"].map(_compact_strategy_label)
+    source["selected_label"] = source["is_selected"].map(lambda value: "선택" if value else "비교")
+    source = source.sort_values(["strategy_key", "scenario_id"], kind="mergesort")
+    target_value = (
+        _as_float(source["monthly_target"].dropna().iloc[0])
+        if source["monthly_target"].notna().any()
+        else float("nan")
+    )
+    if bool(source.attrs.get("fallback_used")):
+        st.markdown(
+            '<div class="scenario-inline-chart-title">'
+            '<strong>전략별 운영 기준 compact summary</strong>'
+            '<span>월말 예상은 동일, 운영 기준 차이를 표로 확인합니다.</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        _render_strategy_compare_fallback(source)
+        return
+
+    st.markdown(
+        '<div class="scenario-inline-chart-title">'
+        '<strong>전략별 월말 도착점 compact chart</strong>'
+        '<span>ScenarioGrid의 월말 예상 실적 차이가 있을 때만 그래프로 비교합니다.</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    _render_strategy_arrival_html_bars(source, target_value)
+
+
+def _strategy_section_cards_html(
+    scenario_df: pd.DataFrame,
+    forecast_key: str,
+    suffixes: tuple[str, ...],
+    full_ids: dict[str, str],
+    *,
+    is_active: bool,
+    selected_strategy_key: str = "",
+) -> str:
+    cards: list[str] = []
+    for suffix in suffixes:
+        row = _strategy_reference_row(scenario_df, forecast_key, suffix)
+        full_id = full_ids.get(suffix, suffix)
+        inactive_class = "" if is_active else " strategy-card-inactive"
+        active_class = " strategy-card-active" if is_active else ""
+        selected_class = " is-recommended" if is_active and suffix == selected_strategy_key else ""
+        if is_active and suffix == selected_strategy_key:
+            badge_html = '<span class="strategy-card-shell__badge is-recommended-badge">권장</span>'
+        elif is_active:
+            badge_html = ""
+        else:
+            badge_html = '<span class="strategy-card-shell__badge is-reference">참고용</span>'
+        if row is None:
+            definition = SCENARIO_STRATEGY_DEFINITIONS.get(suffix, {})
+            card_html = (
+                '<article class="scenario-card scenario-card--neutral">'
+                '<div class="scenario-card__topline">'
+                f'<div><div class="scenario-card__id">{escape(suffix)}</div>'
+                '<div class="scenario-card__group">현재 상태에서는 참고용</div></div>'
+                "</div>"
+                f'<div class="scenario-card__name">{escape(str(definition.get("name", suffix)))}</div>'
+                f'<div class="scenario-card__description">{escape(str(definition.get("description", "전략 정의를 참고합니다.")))}</div>'
+                '<div class="scenario-card__metrics">'
+                '<div class="scenario-card__metric">'
+                '<div class="scenario-card__metric-label">적용 상태</div>'
+                '<div class="scenario-card__metric-value">참고용</div>'
+                "</div>"
+                '<div class="scenario-card__metric">'
+                '<div class="scenario-card__metric-label">계산 기준</div>'
+                '<div class="scenario-card__metric-value">기존 산식 유지</div>'
+                "</div>"
+                "</div>"
+                "</article>"
+            )
+        elif suffix in {"O1", "O2", "O3"}:
+            card_html = _render_overachievement_operation_basis_card(row, suffix)
+        else:
+            card_html = render_scenario_card(row)
+        cards.append(
+            f'<div class="strategy-card-shell{inactive_class}{active_class}{selected_class}">'
+            '<div class="strategy-card-shell__head">'
+            f'<div class="strategy-card-shell__code">{escape(suffix)} · {escape(full_id)}</div>'
+            f"{badge_html}"
+            "</div>"
+            f"{card_html}"
+            "</div>"
+        )
+    return "".join(cards)
+
+
+def _render_overachievement_operation_basis_card(
+    row: Mapping[str, object],
+    suffix: str,
+) -> str:
+    strategy_id = str(
+        row.get("overachievement_strategy")
+        or row.get("provision_strategy")
+        or suffix
+    )
+    display_id = strategy_id if strategy_id else suffix
+    scenario_id = str(row.get("scenario_id") or suffix)
+    revised_target = _first_finite_amount(
+        row.get("revised_monthly_target"),
+        row.get("monthly_target"),
+    )
+    base_forecast = _first_finite_amount(
+        row.get("forecast_amount"),
+        row.get("forecast_after_provision"),
+    )
+    strategy_expected = _strategy_expected_amount_for_overachievement(row)
+    target_variance_after_strategy = _amount_difference(strategy_expected, revised_target)
+    detail_label, detail_value = _overachievement_basis_detail_metric(row, suffix)
+    metrics = (
+        ("운영 기준 목표", format_amount(revised_target)),
+        (detail_label, format_amount(detail_value)),
+        ("기준 F예측값", format_amount(base_forecast)),
+        ("전략 적용 후 차이", format_amount(target_variance_after_strategy)),
+    )
+    metrics_html = "".join(
+        '<div class="scenario-card__metric">'
+        f'<div class="scenario-card__metric-label">{escape(str(label))}</div>'
+        f'<div class="scenario-card__metric-value">{escape(str(value))}</div>'
+        "</div>"
+        for label, value in metrics
+    )
+    kind_class = suffix.lower() if suffix in {"O1", "O2", "O3"} else "neutral"
+    return (
+        f'<article class="scenario-card scenario-card--{escape(kind_class)} is-emphasis">'
+        '<div class="scenario-card__topline">'
+        f'<div><div class="scenario-card__id">{escape(scenario_id)}</div>'
+        '<div class="scenario-card__group">초과달성 운영</div></div>'
+        f"{render_status_badge(row.get('target_status'))}"
+        "</div>"
+        f'<div class="scenario-card__name">{escape(scenario_display_name(display_id))}</div>'
+        f'<div class="scenario-card__description">{escape(scenario_description(display_id))}</div>'
+        f'<div class="scenario-card__metrics">{metrics_html}</div>'
+        "</article>"
+    )
+
+
+def _overachievement_basis_detail_metric(
+    row: Mapping[str, object],
+    suffix: str,
+) -> tuple[str, object]:
+    if suffix == "O2":
+        return "Stretch 전환분", row.get("stretch_uplift")
+    if suffix == "O3":
+        return "품질관리 여유분", row.get("relief_amount")
+    return "잔여 안전버퍼", row.get("remaining_surplus_buffer")
+
+
+def _strategy_reference_row(
+    scenario_df: pd.DataFrame,
+    forecast_key: str,
+    suffix: str,
+) -> Mapping[str, object] | None:
+    if scenario_df.empty or "scenario_id" not in scenario_df.columns:
+        return None
+    rows = scenario_df.loc[
+        scenario_df["scenario_id"].astype(str).map(lambda value: _split_scenario_id(value)[1] == suffix)
+    ]
+    if rows.empty:
+        return None
+    focused = rows.loc[rows["scenario_id"].astype(str).str.startswith(f"{forecast_key}_")]
+    if not focused.empty:
+        return focused.iloc[0].to_dict()
+    return rows.iloc[0].to_dict()
+
+
+def _render_forecast_model_mini_chart(
+    model_rows_df: pd.DataFrame,
+    selected_row: pd.Series,
+    validation_result: Mapping[str, Any],
+) -> None:
+    st.markdown(
+        render_section_header(
+            "F1/F2/F3 비교 mini chart",
+            "월말 예상값을 선으로 잇지 않고, 목표선 대비 차이를 막대로 비교합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    if model_rows_df.empty:
+        st.info("예측 계산 후 F1/F2/F3 비교 차트를 표시합니다.")
+        return
+
+    source = build_forecast_model_mini_chart_source(
+        model_rows_df,
+        selected_row,
+        monthly_target=validation_result.get("monthly_target"),
+    )
+    if source.empty:
+        st.info(str(source.attrs.get("empty_state") or "예측 계산 후 F1/F2/F3 비교 차트를 표시합니다."))
+        return
+
+    source = source.copy()
+    source["target_status_label"] = source["target_status"].map(_localize_display_value)
+    target_value = _as_float(source.attrs.get("target_line_value"))
+    representative_value = _as_float(source.attrs.get("representative_value"))
+    representative_model_key = str(source.attrs.get("representative_model_key") or "")
+    target_source = (
+        pd.DataFrame({"value": [target_value], "label": ["목표선"]})
+        if math.isfinite(target_value)
+        else pd.DataFrame(columns=["value", "label"])
+    )
+    representative_source = (
+        pd.DataFrame(
+            {
+                "label": [representative_model_key],
+                "value": [representative_value],
+                "marker_label": ["대표 월마감 예상값"],
+            }
+        )
+        if representative_model_key in set(source["label"]) and math.isfinite(representative_value)
+        else pd.DataFrame(columns=["label", "value", "marker_label"])
+    )
+    scale_source = pd.concat(
+        [
+            source.loc[:, ["value"]],
+            target_source.loc[:, ["value"]],
+            representative_source.loc[:, ["value"]],
+        ],
+        ignore_index=True,
+    )
+    order = ["F1", "F2", "F3"]
+    chart = _build_forecast_model_comparison_chart(
+        source,
+        target_source,
+        representative_source,
+        scale_source,
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        f"F1/F2/F3 mini chart data rows: {len(source)} | "
+        f"target_status: {_localize_display_value(selected_row.get('target_status'))}"
+    )
+    return
+
+    chart = (
+        (
+            alt.Chart(source)
+            .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3, opacity=0.94, stroke="#25312f", strokeWidth=0.5)
+            .encode(
+                x=alt.X("label:N", title=None, sort=order, axis=alt.Axis(labelAngle=0)),
+                y=alt.Y(
+                    "value:Q",
+                    title="월말 예상 / 목표",
+                    axis=alt.Axis(format=chart_value_format("억원")),
+                    scale=_auto_value_scale(scale_source),
+                ),
+                color=alt.value("#2f6f68"),
+                opacity=alt.condition("datum.is_selected_model", alt.value(1.0), alt.value(0.78)),
+                tooltip=[
+                    alt.Tooltip("forecast_model:N", title="예측모델"),
+                    alt.Tooltip("value:Q", title="월말 예상", format=chart_value_format("억원")),
+                    alt.Tooltip("target_status_label:N", title="target_status"),
+                ],
+            )
+            + alt.Chart(source)
+            .mark_point(color="#25312f", filled=True, size=92, opacity=0.9)
+            .encode(
+                x=alt.X("label:N", title=None, sort=order),
+                y=alt.Y("value:Q", scale=_auto_value_scale(scale_source)),
+                tooltip=[
+                    alt.Tooltip("forecast_model:N", title="예측모델"),
+                    alt.Tooltip("value:Q", title="월말 예상", format=chart_value_format("억원")),
+                ],
+            )
+            + alt.Chart(representative_source)
+            .mark_point(color="#b7791f", filled=True, size=150, shape="diamond", opacity=0.95)
+            .encode(
+                x=alt.X("label:N", title=None, sort=order),
+                y=alt.Y("value:Q", scale=_auto_value_scale(scale_source)),
+                tooltip=[
+                    alt.Tooltip("marker_label:N", title="구분"),
+                    alt.Tooltip("value:Q", title="금액", format=chart_value_format("억원")),
+                ],
+            )
+            + alt.Chart(target_source)
+            .mark_rule(color="#7f8785", strokeDash=[6, 4], strokeWidth=2.4)
+            .encode(
+                y="value:Q",
+                tooltip=[alt.Tooltip("value:Q", title="목표선", format=chart_value_format("억원"))],
+            )
+            + alt.Chart(target_source)
+            .mark_text(align="left", dx=4, dy=-6, fontSize=12, fontWeight=700, color="#636967")
+            .encode(x=alt.value(5), y="value:Q", text=alt.value("목표선"))
+        )
+        .properties(height=220)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(
+        f"F1/F2/F3 mini chart data rows: {len(source)} | "
+        f"target_status: {_localize_display_value(selected_row.get('target_status'))}"
+    )
+
+
+def _build_forecast_model_comparison_chart(
+    source: pd.DataFrame,
+    target_source: pd.DataFrame,
+    representative_source: pd.DataFrame,
+    scale_source: pd.DataFrame,
+) -> alt.Chart:
+    """Build an intuitive model comparison chart around the target delta baseline."""
+    order = ["F1", "F2", "F3"]
+    value_format = chart_value_format("억원")
+    chart_source = source.copy()
+    target_value = (
+        _as_float(target_source["value"].iloc[0])
+        if not target_source.empty and "value" in target_source
+        else float("nan")
+    )
+    chart_source["value_label"] = chart_source["value"].map(lambda value: f"{_as_float(value):,.1f}")
+    chart_source["target_delta"] = (
+        pd.to_numeric(chart_source["value"], errors="coerce") - target_value
+        if math.isfinite(target_value)
+        else float("nan")
+    )
+    finite_deltas = pd.to_numeric(chart_source["target_delta"], errors="coerce").dropna()
+    max_delta = max(0.0, float(finite_deltas.max())) if not finite_deltas.empty else 1.0
+    min_delta = min(0.0, float(finite_deltas.min())) if not finite_deltas.empty else 0.0
+    spread = max(max_delta - min_delta, abs(max_delta), abs(min_delta), 1.0)
+    delta_padding = spread * 0.18
+    delta_scale = alt.Scale(domain=[min_delta - delta_padding, max_delta + delta_padding], nice=True)
+    chart_source["target_delta_label"] = chart_source["target_delta"].map(
+        lambda value: f"{_as_float(value):+,.1f}억" if math.isfinite(_as_float(value)) else ""
+    )
+    chart_source["forecast_label"] = chart_source["value"].map(
+        lambda value: f"{_as_float(value):,.1f}억 예상" if math.isfinite(_as_float(value)) else ""
+    )
+    chart_source["bar_color"] = chart_source.apply(
+        lambda row: "#b7791f"
+        if bool(row.get("is_selected_model"))
+        else ("#14756f" if _as_float(row.get("target_delta")) >= 0 else "#c2410c"),
+        axis=1,
+    )
+    selected_source = chart_source.loc[chart_source["is_selected_model"].astype(bool)].copy()
+
+    base = alt.Chart(chart_source).encode(
+        x=alt.X(
+            "label:N",
+            title=None,
+            sort=order,
+            axis=alt.Axis(labelAngle=0, labelFontSize=12, labelFontWeight=700),
+        ),
+        y=alt.Y(
+            "target_delta:Q",
+            title="목표 대비 차이",
+            axis=alt.Axis(format="+,.1f", grid=False, labelFontSize=11),
+            scale=delta_scale,
+        ),
+        tooltip=[
+            alt.Tooltip("forecast_model:N", title="예측모델"),
+            alt.Tooltip("value:Q", title="월말 예상", format=value_format),
+            alt.Tooltip("target_delta:Q", title="목표 대비 차이", format="+,.1f"),
+            alt.Tooltip("target_status_label:N", title="target_status"),
+        ],
+    )
+    zero_source = pd.DataFrame({"zero": [0.0], "label": ["목표선"]})
+    target_baseline = (
+        alt.Chart(zero_source)
+        .mark_rule(color="#7f8785", strokeDash=[6, 4], strokeWidth=2.1)
+        .encode(
+            y=alt.Y("zero:Q", scale=delta_scale),
+            tooltip=[alt.Tooltip("label:N", title="기준")],
+        )
+    )
+    baseline_label = (
+        alt.Chart(zero_source)
+        .mark_text(align="left", baseline="bottom", dx=6, dy=-4, fontSize=12, fontWeight=700, color="#636967")
+        .encode(x=alt.value(8), y=alt.Y("zero:Q", scale=delta_scale), text=alt.value("목표선"))
+    )
+    delta_bars = base.mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5, opacity=0.9).encode(
+        y=alt.Y(
+            "target_delta:Q",
+            title="목표 대비 차이",
+            axis=alt.Axis(format="+,.1f", grid=False, labelFontSize=11),
+            scale=delta_scale,
+        ),
+        y2=alt.Y2(datum=0),
+        color=alt.Color("bar_color:N", scale=None, legend=None),
+    )
+    model_points = base.mark_point(filled=True, size=120, stroke="#ffffff", strokeWidth=1.4).encode(
+        color=alt.Color("bar_color:N", scale=None, legend=None),
+    )
+    selected_point = (
+        alt.Chart(selected_source)
+        .mark_point(color="#b7791f", filled=True, size=220, shape="diamond", stroke="#ffffff", strokeWidth=1.5)
+        .encode(
+            x=alt.X("label:N", title=None, sort=order),
+            y=alt.Y("target_delta:Q", scale=delta_scale),
+            tooltip=[
+                alt.Tooltip("forecast_model:N", title="선택 모델"),
+                alt.Tooltip("value:Q", title="대표 월말 예상", format=value_format),
+                alt.Tooltip("target_delta:Q", title="목표 대비 차이", format="+,.1f"),
+            ],
+        )
+    )
+    delta_labels = base.mark_text(
+        align="center",
+        baseline="bottom",
+        dy=-7,
+        fontSize=13,
+        fontWeight=700,
+        color="#202833",
+    ).encode(text="target_delta_label:N")
+    forecast_labels = base.mark_text(
+        align="center",
+        baseline="top",
+        dy=12,
+        fontSize=11,
+        color="#536170",
+    ).encode(y=alt.Y("zero:Q", scale=delta_scale), text="forecast_label:N")
+    return (
+        (
+            target_baseline
+            + baseline_label
+            + delta_bars
+            + model_points
+            + selected_point
+            + delta_labels
+            + forecast_labels
+        )
+        .properties(height=220)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_view(stroke=None)
+    )
+
+
+def _render_strategy_arrival_compact_chart(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+) -> None:
+    st.markdown(
+        render_section_header(
+            "전략별 월말 도착점 비교",
+            "P1/P2/P3와 O1/O2/O3의 월말 예상이 같으면 운영 기준 비교로 전환합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    source = build_strategy_arrival_compare_source(scenario_df, selected_scenario_id)
+    if source.empty:
+        st.info("시나리오 계산 후 전략별 월말 도착점 비교 차트를 표시합니다.")
+        return
+
+    source = source.copy()
+    source["strategy_label"] = source["strategy_key"].map(_compact_strategy_label)
+    source["selected_label"] = source["is_selected"].map(lambda value: "선택" if value else "비교")
+    source = source.sort_values(["strategy_key", "scenario_id"], kind="mergesort")
+
+    scenario_order = source["scenario_id"].tolist()
+    target_value = _as_float(source["monthly_target"].dropna().iloc[0]) if source["monthly_target"].notna().any() else float("nan")
+    target_source = pd.DataFrame({"monthly_target": [target_value]}).dropna()
+
+    if bool(source.attrs.get("fallback_used")):
+        _render_strategy_compare_fallback(source)
+        return
+
+    _render_strategy_arrival_html_bars(source, target_value)
+    bars = (
+        alt.Chart(source)
+        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4, opacity=0.95, stroke="#25312f", strokeWidth=0.35)
+        .encode(
+            y=alt.Y("scenario_id:N", title="시나리오", sort=scenario_order),
+            x=alt.X(
+                "compare_value:Q",
+                title=str(source.attrs.get("compare_label") or "월말 도착점"),
+                axis=alt.Axis(format=chart_value_format("억원")),
+                scale=_auto_value_scale(source.rename(columns={"compare_value": "value"})),
+            ),
+            color=alt.Color(
+                "strategy_key:N",
+                title="전략",
+                scale=alt.Scale(
+                    domain=["P1", "P2", "P3", "O1", "O2", "O3", "N1", "N2", "N3"],
+                    range=[
+                        "#b48632",
+                        "#c49a4d",
+                        "#d2b06e",
+                        "#567c5d",
+                        "#4c6f8f",
+                        "#b48632",
+                        "#51758c",
+                        "#6f8795",
+                        "#8aa0aa",
+                    ],
+                ),
+            ),
+            opacity=alt.condition("datum.is_selected", alt.value(1.0), alt.value(0.74)),
+            tooltip=[
+                alt.Tooltip("scenario_id:N", title="시나리오"),
+                alt.Tooltip("strategy_label:N", title="전략 해석"),
+                alt.Tooltip("compare_label:N", title="비교 기준"),
+                alt.Tooltip("compare_value:Q", title="비교값", format=chart_value_format("억원")),
+                alt.Tooltip("forecast_after_provision:Q", title="월말 예상 실적", format=chart_value_format("억원")),
+                alt.Tooltip("monthly_target:Q", title="목표선", format=chart_value_format("억원")),
+                alt.Tooltip("target_variance:Q", title="목표 대비 차이", format=chart_value_format("억원")),
+                alt.Tooltip("selected_label:N", title="선택 여부"),
+            ],
+        )
+    )
+    target_rule = (
+        alt.Chart(target_source)
+        .mark_rule(color="#8a8f98", strokeDash=[5, 4], strokeWidth=2)
+        .encode(
+            x="monthly_target:Q",
+            tooltip=[alt.Tooltip("monthly_target:Q", title="목표선", format=chart_value_format("억원"))],
+        )
+    )
+    text = (
+        alt.Chart(source)
+        .mark_text(align="left", dx=6, fontSize=12, fontWeight=700, color="#25312f")
+        .encode(
+            y=alt.Y("scenario_id:N", sort=scenario_order),
+            x="compare_value:Q",
+            text=alt.Text("compare_value:Q", format=chart_value_format("억원")),
+        )
+    )
+    chart = (
+        (bars + target_rule + text)
+        .properties(height=max(220, len(source) * 34))
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption("O1: 버퍼 유지 / O2: Stretch 전환 / O3: 품질 방어")
+
+
+def _compact_strategy_label(strategy_key: object) -> str:
+    labels = {
+        "P1": "P1 전체 잔여 보정",
+        "P2": "P2 마감일 집중",
+        "P3": "P3 비마감일 보정",
+        "O1": "O1 버퍼 유지",
+        "O2": "O2 Stretch 전환",
+        "O3": "O3 품질 방어",
+        "N1": "N1 유지",
+        "N2": "N2 모니터링",
+        "N3": "N3 품질 점검",
+    }
+    return labels.get(str(strategy_key), str(strategy_key))
+
+
+def active_strategy_suffixes_for_status(target_status: object) -> tuple[str, str, str]:
+    status = str(target_status or "")
+    if status == "OVER_TARGET":
+        return ("O1", "O2", "O3")
+    if status == "ON_TARGET":
+        return ("N1", "N2", "N3")
+    return ("P1", "P2", "P3")
+
+
+def _render_strategy_compare_fallback(source: pd.DataFrame) -> None:
+    compare_label = str(source.attrs.get("compare_label") or "운영 기준")
+    classification = str(source.attrs.get("classification") or "")
+    st.info(
+        "O전략은 월말 예상 실적을 다시 예측하지 않습니다. 같은 F예측값 안에서 운영 기준 목표, Stretch 전환분, 안전버퍼, 품질관리 여유분을 나눕니다."
+    )
+    st.caption(
+        f"동일값 분류: {classification} | 최종 표시 방식: table | 비교 기준: {compare_label}"
+    )
+    working_source = source.copy()
+    if "strategy_key" in working_source.columns:
+        working_source["strategy_effect_type"] = working_source["strategy_key"].map(
+            _strategy_effect_type_label
+        )
+    table_columns = [
+        column
+        for column in (
+            "scenario_id",
+            "strategy_key",
+            "strategy_effect_type",
+            "strategy_type",
+            "forecast_after_provision",
+            "revised_monthly_target",
+            "remaining_surplus_buffer",
+            "stretch_uplift",
+            "relief_amount",
+            "minimum_remaining_to_hit_target",
+            "compare_value",
+            "recommended_action",
+        )
+        if column in working_source.columns
+    ]
+    display = working_source.loc[:, table_columns].copy()
+    display = display.rename(
+        columns={
+            "forecast_after_provision": "forecast_reference_value",
+            "revised_monthly_target": "operating_target_reference",
+        }
+    )
+    formatted = _format_display_df(display)
+    if "compare_value" in display.columns:
+        formatted = formatted.rename(columns={"비교 기준값": f"{compare_label} 비교 기준값"})
+    st.dataframe(formatted, hide_index=True, use_container_width=True)
+
+
+def _render_strategy_arrival_html_bars(source: pd.DataFrame, target_value: float) -> None:
+    numeric = source.copy()
+    value_column = "compare_value" if "compare_value" in numeric.columns else "forecast_after_provision"
+    value_label = str(numeric.attrs.get("compare_label") or "월말 도착점")
+    numeric[value_column] = pd.to_numeric(
+        numeric[value_column],
+        errors="coerce",
+    )
+    numeric = numeric.dropna(subset=[value_column])
+    if numeric.empty:
+        st.info("전략별 월말 도착점 표시 데이터가 부족합니다.")
+        return
+
+    values = numeric[value_column].astype(float)
+    max_value = max(float(values.max()), float(target_value) if math.isfinite(target_value) else 0.0, 1.0)
+    rows: list[str] = []
+    for _, row in numeric.iterrows():
+        scenario_id = str(row.get("scenario_id", ""))
+        strategy_key = str(row.get("strategy_key", ""))
+        value = _as_float(row.get(value_column))
+        width = max(8.0, min(100.0, value / max_value * 100.0)) if math.isfinite(value) else 8.0
+        selected_class = " is-selected" if bool(row.get("is_selected")) else ""
+        rows.append(
+            '<div class="compact-arrival-row">'
+            f'<div class="compact-arrival-row__label">{escape(scenario_id)}<span>{escape(_compact_strategy_label(strategy_key))}</span></div>'
+            '<div class="compact-arrival-row__track">'
+            f'<div class="compact-arrival-row__bar compact-arrival-row__bar--{escape(strategy_key[:1].lower())}{selected_class}" '
+            f'style="width:{width:.1f}%"></div>'
+            "</div>"
+            f'<div class="compact-arrival-row__value">{escape(format_amount(value))}</div>'
+            "</div>"
+        )
+    target_html = (
+        f'<div class="compact-arrival-target">목표선 {escape(format_amount(target_value))}</div>'
+        if math.isfinite(target_value)
+        else ""
+    )
+    st.markdown(
+        '<div class="compact-arrival-chart">'
+        f'<div class="compact-arrival-target">{escape(value_label)}</div>'
+        f"{target_html}"
+        f"{''.join(rows)}"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_input_data_page(
+    base_config: dict[str, Any],
+    audit_readonly: bool = False,
+) -> None:
+    st.markdown(
+        render_section_header(
+            "입력 · 데이터",
+            "영업일정, is_close_day, 일별 목표, 누적 실적 입력 상태를 확인합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
     df, source_label = _render_file_upload()
     if df is None:
         st.stop()
     historical_df, historical_source_label = _render_historical_upload()
 
     st.caption(f"입력 소스: {source_label}")
-    df = _render_input_editor(df, source_label)
-    metric, as_of_date, forecast_choice, provision_choice, config = _render_settings(
-        df,
-        config,
-    )
+    df = _render_input_editor(df, source_label, audit_readonly=audit_readonly)
+    _store_current_input_state(df, source_label)
+    _store_historical_input_state(historical_df, historical_source_label)
 
+    metric, as_of_date, _forecast_choice, _provision_choice, config = _render_settings(
+        df,
+        base_config,
+    )
     results = calculate_validated_results(df, as_of_date, metric, config)
     validation_result = results["validation"]
 
-    st.header("4. 입력값 점검")
-    st.caption("입력표가 계산 가능한 상태인지 확인하고, 문제가 있으면 쉬운 문장으로 안내합니다.")
+    st.header("입력 검증")
+    st.caption("마감일 판정은 is_close_day 컬럼만 사용하며, day_name은 표시용입니다.")
     _render_validation(validation_result)
-    if validation_result["errors"]:
-        st.info("입력값에 고쳐야 할 항목이 있어 계산을 중단했습니다. 위 메시지를 확인한 뒤 입력표를 수정해 주세요.")
+    _render_input_state_summary(df, validation_result)
+    render_next_action_panel(
+        "input",
+        {
+            "validation_result": validation_result,
+        },
+    )
+
+
+def _render_forecast_detail_page(context: Mapping[str, Any]) -> None:
+    if _render_validation_guard(context):
         return
 
-    scenario_df = results["scenario_df"]
-    next_close_result = results["next_close_result"]
-    close_cycle_df = results["close_cycle_df"]
+    validation_result = dict(context["validation_result"])
+    scenario_df = _as_dataframe(context["scenario_df"])
+    selected_row = _as_series(context["selected_row"])
+    next_close_result = dict(context["next_close_result"])
+
+    st.markdown(
+        render_section_header("KPI 요약", "월마감 예상, 목표 상태, 다음 마감 누적선을 확인합니다."),
+        unsafe_allow_html=True,
+    )
+    _render_kpis(validation_result, scenario_df, next_close_result, selected_row)
+
+    st.markdown(
+        render_section_header("F1/F2/F3 모델 결과", "기존 forecast pipeline의 결과를 모델별로 요약합니다."),
+        unsafe_allow_html=True,
+    )
+    model_rows = []
+    for forecast_key in ("F1", "F2", "F3"):
+        model_df = _scenario_df_for_forecast_key(scenario_df, forecast_key)
+        if not model_df.empty:
+            row = model_df.iloc[0]
+            model_rows.append(
+                {
+                    "forecast_model": forecast_key,
+                    "scenario_id": row.get("scenario_id"),
+                    "forecast_amount": row.get("forecast_amount"),
+                    "target_status": row.get("target_status"),
+                    "target_variance": row.get("target_variance"),
+                    "surplus_to_target": row.get("surplus_to_target"),
+                    "risk_level": row.get("risk_level"),
+                }
+            )
+    model_rows_df = pd.DataFrame(model_rows)
+    st.dataframe(_format_display_df(model_rows_df), hide_index=True, use_container_width=True)
+    _render_forecast_model_mini_chart(model_rows_df, selected_row, validation_result)
+
+    st.markdown(
+        render_section_header("CloseCycle / Daily revised target", "마감차수 흐름과 잔여 목표 보정 상세입니다."),
+        unsafe_allow_html=True,
+    )
+    close_cycle_df = _as_dataframe(context.get("close_cycle_df"))
+    if close_cycle_df.empty:
+        st.info("마감차수 요약 데이터가 없습니다.")
+    else:
+        st.dataframe(_format_display_df(close_cycle_df), hide_index=True, use_container_width=True)
+    _render_target_or_strategy_table(
+        scenario_df,
+        str(context.get("selected_scenario_id") or ""),
+        _as_dataframe(context.get("revised_targets_df")),
+        show_all_forecast_models=True,
+    )
+    render_next_action_panel("forecast", context)
+
+
+def _render_scenarios_detail_page(context: Mapping[str, Any]) -> None:
+    if _render_validation_guard(context):
+        return
+
+    scenario_df = _as_dataframe(context["scenario_df"])
+    forecast_choice = str(context.get("forecast_choice") or COMPARE_LABEL)
+    provision_choice = str(context.get("provision_choice") or COMPARE_LABEL)
     selected_scenario_id = _render_selected_scenario_picker(
         scenario_df,
         forecast_choice,
         provision_choice,
     )
+    st.session_state[PACE_SELECTED_SCENARIO_SESSION_KEY] = selected_scenario_id
     selected_row = _selected_scenario_row(scenario_df, selected_scenario_id)
     forecast_result, provision_result = run_selected_scenario_detail(
-        df,
-        as_of_date,
-        metric,
+        _as_dataframe(context["df"]),
+        context["as_of_date"],
+        str(context["metric"]),
         selected_scenario_id,
-        config,
+        dict(context["config"]),
     )
-    revised_targets_df = provision_result.get("allocation_by_day", pd.DataFrame())
-    historical_context = build_historical_context(
-        historical_df,
-        df,
-        as_of_date,
-        metric,
-        validation_result,
-        historical_source_label,
-    )
+    revised_targets_df = _as_dataframe(provision_result.get("allocation_by_day"))
 
-    st.header("5. KPI")
-    _render_kpis(
-        validation_result,
+    _render_strategy_arrival_inline_summary(scenario_df, selected_scenario_id)
+    _render_strategy_reference_sections(
         scenario_df,
-        next_close_result,
-        selected_row,
+        selected_scenario_id,
+        selected_row.get("target_status"),
     )
-
-    st.header("6. 본문")
-    _render_body(
+    _render_strategy_arrival_compact_chart(scenario_df, selected_scenario_id)
+    render_next_action_panel("scenarios", context)
+    st.markdown("**ScenarioGrid 전체**")
+    st.dataframe(_format_display_df(scenario_df), use_container_width=True)
+    _render_visuals(
         scenario_df,
         selected_scenario_id,
         selected_row,
-        forecast_result,
-        provision_result,
         revised_targets_df,
-        close_cycle_df,
-        next_close_result,
-        validation_result,
-        historical_context,
-        metric,
-        as_of_date,
-        df,
-        config,
+        _as_dataframe(context["close_cycle_df"]),
+        dict(context["next_close_result"]),
+        dict(context["validation_result"]),
+        str(context["metric"]),
+        context["as_of_date"],
+        _as_dataframe(context["df"]),
+        dict(context["config"]),
+        audit_readonly=bool(context.get("audit_readonly", False)),
+    )
+    _render_selected_scenario_summary(selected_scenario_id, selected_row)
+    _render_target_or_strategy_table(scenario_df, selected_scenario_id, revised_targets_df)
+
+
+def _render_report_detail_page(context: Mapping[str, Any]) -> None:
+    if _render_validation_guard(context):
+        return
+
+    report_text = str(context.get("report_text") or "입력 후 계산됩니다.")
+    selected_row = _as_series(context.get("selected_row"))
+    validation_result = dict(context.get("validation_result") or {})
+    next_close_result = dict(context.get("next_close_result") or {})
+    report_basis_date = _format_date(context.get("as_of_date"))
+    report_name = str(context.get("report_name") or "기존 Excel 리포트 조회 전")
+    target_status = selected_row.get("target_status")
+    st.markdown(
+        render_section_header(
+            "보고 메모",
+            "판단 메모는 내부 검토용 구조화 요약이고, 복사용 보고문은 공유 채널에 붙여넣는 최종 문안입니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="report-ia-note">'
+        "동일한 report_builder 결과를 기준으로 하되, 위쪽은 의사결정에 필요한 근거를 카드로 나누고 "
+        "아래쪽은 전체 선택 후 복사하기 쉬운 원문 형태로 제공합니다."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="report-meta-row">'
+        f'<span><strong>보고 기준일</strong><br>{escape(report_basis_date)}</span>'
+        f'<span><strong>Excel 포함 여부</strong><br>{escape(report_name)} 기준, 이 화면에서는 새 파일을 만들지 않음</span>'
+        f'<span><strong>보고 상태</strong><br>{escape(_localize_display_value(target_status))}</span>'
+        "</div>",
+        unsafe_allow_html=True,
     )
 
-    st.header("7. 다운로드")
-    report_text = build_daily_report_text(
-        scenario_df,
-        next_close_result,
-        selected_scenario_id=selected_scenario_id,
+    memo_items = (
+        (
+            "요약",
+            f"{_localize_display_value(target_status)} / 월말 예상 {format_amount(selected_row.get('forecast_after_provision'))}",
+        ),
+        (
+            "운영 판단",
+            _operation_mode_label(target_status),
+        ),
+        (
+            "리스크",
+            f"{_localize_display_value(selected_row.get('risk_level', '계산 불가'))} / {_localize_display_value(selected_row.get('status', '계산 불가'))}",
+        ),
+        (
+            "권장 액션",
+            _home_next_action_text(target_status, validation_result, next_close_result),
+        ),
+        (
+            "근거 수치",
+            f"목표 대비 {_format_signed_amount(selected_row.get('target_variance'))}, 다음 마감 누적선 필요실적 {format_amount(next_close_result.get('required_to_recover_next_close_cum'))}",
+        ),
+        (
+            "공유 전 확인",
+            "복사용 보고문에서 문장 흐름을 확인하고 필요한 채널에 맞게 전체 선택 후 복사합니다.",
+        ),
     )
-    summary_dict = build_summary_dict(
-        validation_result,
-        selected_row,
-        next_close_result,
-        metric,
-        as_of_date,
+    memo_cards = "".join(
+        '<div class="report-memo-card">'
+        f"<strong>{escape(title)}</strong>"
+        f"<span>{escape(body)}</span>"
+        "</div>"
+        for title, body in memo_items
     )
-    report_bytes, report_name = build_excel_report_bytes(
-        summary_dict,
-        scenario_df,
-        _as_dataframe(revised_targets_df),
-        close_cycle_df,
-        build_display_validation_result(validation_result),
-        report_text,
-        metric,
-        as_of_date,
+    st.markdown(
+        render_section_header(
+            "판단 메모 · 내부 검토용",
+            "요약, 운영 판단, 리스크, 권장 액션, 근거 수치를 분리해 검토합니다.",
+        ),
+        unsafe_allow_html=True,
     )
-    st.download_button(
-        "엑셀 리포트 다운로드",
-        data=report_bytes,
-        file_name=report_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    st.markdown(f'<div class="report-memo-grid">{memo_cards}</div>', unsafe_allow_html=True)
+    _render_report_glossary_panel()
+
+    st.markdown(
+        render_section_header(
+            "복사용 보고문 · 공유용",
+            "팀장/임원/공유 채널에 그대로 붙여넣기 위한 최종 문장입니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.caption("복사 버튼 대신 텍스트 영역을 전체 선택한 뒤 복사하세요. 보고문 생성 로직은 변경하지 않았습니다.")
+    report_key = hashlib.sha1(report_text.encode("utf-8")).hexdigest()[:12]
+    st.text_area("복사용 보고문", value=report_text, height=360, key=f"report_page_{report_key}")
+    render_next_action_panel("report", context)
+
+
+def _render_history_detail_page(context: Mapping[str, Any]) -> None:
+    if _render_validation_guard(context):
+        return
+    _render_forecast_history_backtest_tab(
+        _as_dataframe(context["scenario_df"]),
+        str(context["metric"]),
+        context["as_of_date"],
+        audit_readonly=bool(context.get("audit_readonly", False)),
+    )
+    render_next_action_panel("history", context)
+
+
+def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
+    if _render_validation_guard(context):
+        return
+
+    audit_readonly = bool(context.get("audit_readonly", False))
+    scenario_df = _as_dataframe(context["scenario_df"])
+    revised_targets_df = _as_dataframe(context["revised_targets_df"])
+    st.markdown(
+        render_section_header(
+            "Excel 공유",
+            "읽기 전용 상태 조회가 기본이며, 파일 생성은 명시적 버튼 클릭 시에만 실행합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    latest_files = list_latest_excel_outputs()
+    latest_report_path = _latest_existing_report_path(latest_files)
+    st.markdown(
+        '<section class="excel-readonly-panel">'
+        '<div class="excel-readonly-panel__label">읽기 전용</div>'
+        '<h3>outputs/latest 상태 조회</h3>'
+        '<p>이 페이지를 열거나 화면 캡처하는 동안 Excel 리포트는 생성하거나 수정하지 않습니다. '
+        '파일 생성은 아래 재생성 버튼을 누를 때만 실행됩니다.</p>'
+        "</section>",
+        unsafe_allow_html=True,
+    )
+    if audit_readonly:
+        st.info("읽기 전용 감리 모드: Excel 생성/재생성 버튼이 비활성화됩니다.")
+    if latest_files.empty:
+        st.info("outputs/latest에 공유 가능한 Excel 파일이 없습니다. 생성 필요 상태입니다.")
+    else:
+        st.dataframe(latest_files, hide_index=True, use_container_width=True)
+
+    if latest_report_path is None:
+        st.info("기존 daily_report Excel 리포트가 없어 생성 필요 상태입니다.")
+    else:
+        st.markdown(render_download_card(latest_report_path.name), unsafe_allow_html=True)
+        st.download_button(
+            "기존 Excel 리포트 다운로드",
+            data=latest_report_path.read_bytes(),
+            file_name=latest_report_path.name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    if st.button(
+        "최신 리포트 재생성",
+        key="regenerate_latest_excel_report",
+        disabled=audit_readonly,
+    ):
+        report_bytes, report_name = build_excel_report_bytes(
+            dict(context["summary_dict"]),
+            scenario_df,
+            revised_targets_df,
+            _as_dataframe(context["close_cycle_df"]),
+            build_display_validation_result(dict(context["validation_result"])),
+            str(context["report_text"]),
+            str(context["metric"]),
+            context["as_of_date"],
+        )
+        st.success(f"Excel 리포트를 생성했습니다: {report_name}")
+        st.download_button(
+            "생성된 Excel 리포트 다운로드",
+            data=report_bytes,
+            file_name=report_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    st.caption("archive_invalid와 archive_old_format는 기본 공유 대상이 아닙니다.")
+    render_next_action_panel("excel", context)
+    st.markdown("**ScenarioGrid 최신 컬럼 점검**")
+    st.dataframe(_scenario_grid_column_check_df(scenario_df), hide_index=True, use_container_width=True)
+
+
+def _render_audit_detail_page(context: Mapping[str, Any]) -> None:
+    st.markdown(
+        render_section_header(
+            "검증 · 운영관리",
+            "테스트, Gate Runner, 금지 패턴, 보안 운영 정책을 요약합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    validation_result = dict(context.get("validation_result") or {})
+    if bool(context.get("audit_readonly", False)):
+        st.info("읽기 전용 감리 모드: 이 페이지 조회 중 outputs 파일을 생성하거나 갱신하지 않습니다.")
+    st.write(f"- 현재 입력 검증 오류: {len(validation_result.get('errors') or [])}건")
+    st.write(f"- 현재 입력 검증 주의: {len(validation_result.get('warnings') or [])}건")
+    st.write("- 현재 화면 보정 기준: U03-A1.1 Visual Correction + Excel Read-only Fix")
+    st.write("- Auth Gate: 로컬 운영 기준이며, 외부 배포 전 보안 복원 예정입니다.")
+    st.write("- `.streamlit/secrets.toml`은 로컬 전용이며 감리/배포 패키지에 포함하지 않습니다.")
+    st.write("- 실데이터, 고객/계약/개인 식별정보의 외부 공개는 금지됩니다.")
+
+    st.markdown("**현재 검증 로그**")
+    for label, path in (
+        ("pytest", REPO_ROOT / "audit" / "logs" / "u03_a1_1_pytest.txt"),
+        ("Gate Runner", REPO_ROOT / "audit" / "logs" / "u03_a1_1_gate_runner_all.json"),
+        ("금지 패턴", REPO_ROOT / "audit" / "logs" / "u03_a1_1_forbidden_pattern_scan.txt"),
+        ("outputs mtime", REPO_ROOT / "audit" / "logs" / "u03_a1_1_output_mtime_check.txt"),
+    ):
+        st.caption(f"{label}: {path}")
+    render_next_action_panel("audit", context)
+
+
+def _render_input_state_summary(
+    df: pd.DataFrame,
+    validation_result: dict[str, Any],
+) -> None:
+    close_flags = _coerce_is_close_day(df["is_close_day"]) if "is_close_day" in df.columns else pd.Series(dtype=bool)
+    cols = st.columns(4)
+    cols[0].metric("입력 행 수", len(df))
+    cols[1].metric("마감일 행 수", int(close_flags.sum()) if not close_flags.empty else 0)
+    cols[2].metric("월 목표", format_amount(validation_result.get("monthly_target")))
+    cols[3].metric("현재 누적 실적", format_amount(validation_result.get("current_actual_cum")))
+    with st.expander("입력표 확인", expanded=False):
+        st.dataframe(_format_display_df(df), hide_index=True, use_container_width=True)
+
+
+def _render_validation_guard(context: Mapping[str, Any]) -> bool:
+    validation_result = dict(context.get("validation_result") or {})
+    errors = list(validation_result.get("errors") or [])
+    if not errors:
+        return False
+    st.warning("입력값에 고쳐야 할 항목이 있어 이 상세 페이지의 계산 결과를 표시하지 않습니다.")
+    _render_validation(validation_result)
+    return True
+
+
+def _scenario_grid_column_check_df(scenario_df: pd.DataFrame) -> pd.DataFrame:
+    required_columns = (
+        "target_status",
+        "target_variance",
+        "surplus_to_target",
+        "strategy_type",
+        "overachievement_strategy",
+        "stretch_uplift",
+        "revised_monthly_target",
+        "remaining_surplus_buffer",
+        "minimum_remaining_to_hit_target",
+        "relief_amount",
+        "recommended_action",
+    )
+    return pd.DataFrame(
+        {
+            "column": required_columns,
+            "present": [column in scenario_df.columns for column in required_columns],
+        }
     )
 
 
@@ -1193,8 +3671,12 @@ def _inject_app_styles() -> None:
 
         .block-container {
             max-width: 1480px;
-            padding-top: 1.5rem;
-            padding-bottom: 4rem;
+            padding-top: 0.78rem;
+            padding-bottom: 3rem;
+        }
+
+        div[data-testid="stVerticalBlock"] {
+            gap: 0.55rem;
         }
 
         h1 {
@@ -1248,6 +3730,9 @@ def _inject_app_styles() -> None:
             min-height: var(--metric-card-height);
             box-sizing: border-box;
             padding: 0.58rem 0.72rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
             background: var(--panel-bg);
             border: 1px solid var(--line-soft);
             border-left: 3px solid var(--accent);
@@ -1386,9 +3871,1900 @@ def _inject_app_styles() -> None:
             line-height: 1.42 !important;
         }
 
-        textarea[aria-label="자동 보고문"] {
+        textarea[aria-label="보고 메모"] {
             font-size: var(--font-body) !important;
             line-height: 1.58 !important;
+        }
+        .page-header {
+            margin: 0 0 8px !important;
+            padding: 0 !important;
+        }
+
+        .page-header__eyebrow {
+            font-size: 11px !important;
+            line-height: 1.15 !important;
+            margin-bottom: 2px !important;
+        }
+
+        .page-header h1 {
+            margin: 0 0 5px !important;
+            font-size: 25px !important;
+            line-height: 1.14 !important;
+        }
+
+        .page-header__subtitle {
+            font-size: 12px !important;
+            line-height: 1.28 !important;
+            margin-top: 0 !important;
+        }
+
+        .workbench-shell,
+        .workbench-main {
+            color: #25312f;
+        }
+
+        .workbench-shell.top-status-bar,
+        .page-header-compact {
+            border: 1px solid #d8d1c6;
+            border-radius: 8px;
+            background: #fffdf8;
+            padding: 8px 12px;
+            margin: 0 0 6px;
+            box-shadow: 0 1px 2px rgba(54, 46, 36, 0.06);
+        }
+
+        .page-header-compact {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 0;
+            margin: 0;
+            border: 0;
+            box-shadow: none;
+        }
+
+        .page-header-compact__eyebrow {
+            color: #2f6f68;
+            font-size: 11px;
+            font-weight: 850;
+            line-height: 1.2;
+        }
+
+        .page-header-compact h1 {
+            margin: 2px 0 0 !important;
+            font-size: 19px !important;
+            line-height: 1.15 !important;
+            font-weight: 850 !important;
+            letter-spacing: 0 !important;
+        }
+
+        .page-header-compact p {
+            margin: 2px 0 0;
+            color: #66716e;
+            font-size: 12px !important;
+            line-height: 1.25 !important;
+        }
+
+        .workbench-fact-row {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(130px, 1fr));
+            gap: 8px;
+            margin: 8px 0 10px;
+        }
+
+        .metric-card-compact {
+            min-height: 52px;
+            border: 1px solid #d8d1c6;
+            border-radius: 8px;
+            background: #faf8f3;
+            padding: 8px 10px;
+        }
+
+        .metric-card-compact span {
+            display: block;
+            color: #66716e;
+            font-size: 11px;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+
+        .metric-card-compact strong {
+            display: block;
+            margin-top: 3px;
+            color: #25312f;
+            font-size: 14px;
+            font-weight: 850;
+            line-height: 1.24;
+            overflow-wrap: anywhere;
+        }
+
+        .projection-chart-card,
+        .decision-panel,
+        .report-card,
+        .excel-card,
+        .empty-state {
+            border: 1px solid #d8d1c6;
+            border-radius: 8px;
+            background: #fffdf8;
+            box-shadow: 0 1px 2px rgba(54, 46, 36, 0.06);
+        }
+
+        .projection-chart-card {
+            padding: 8px 10px 8px;
+            min-height: 0;
+        }
+
+        .projection-chart-card__head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 4px;
+        }
+
+        .projection-chart-card__label {
+            color: #25312f;
+            font-size: 16px;
+            font-weight: 850;
+            line-height: 1.25;
+        }
+
+        .projection-chart-card__copy {
+            margin-top: 2px;
+            color: #66716e;
+            font-size: 12px;
+            line-height: 1.3;
+        }
+
+        .chart-legend-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            padding: 8px 2px 0;
+            color: #66716e;
+            font-size: 12px;
+            font-weight: 750;
+        }
+
+        .chart-legend-row span {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .chart-legend-row i {
+            display: inline-block;
+            width: 18px;
+            height: 0;
+            border-top: 3px solid #2f6f68;
+        }
+
+        .chart-legend-row .legend-target {
+            border-color: #8a8f98;
+            border-top-style: dashed;
+        }
+
+        .chart-legend-row .legend-actual {
+            border-color: #0f766e;
+        }
+
+        .chart-legend-row .legend-projection {
+            border-color: #2f6f68;
+            border-top-style: dashed;
+        }
+
+        .chart-legend-row .legend-band {
+            height: 10px;
+            border: 0;
+            background: #dcebe8;
+        }
+
+        .chart-legend-row .legend-close {
+            border-color: #b48632;
+            border-top-style: dashed;
+        }
+
+        .chart-legend-row .legend-current {
+            width: 10px;
+            height: 10px;
+            border: 0;
+            border-radius: 999px;
+            background: #25312f;
+        }
+
+        .decision-panel {
+            padding: 10px 12px;
+            min-height: 0;
+        }
+
+        .decision-panel__label {
+            color: #2f6f68;
+            font-size: 11px;
+            font-weight: 900;
+            line-height: 1.2;
+            text-transform: uppercase;
+        }
+
+        .decision-panel h2 {
+            margin: 4px 0 6px !important;
+            padding: 0 !important;
+            border: 0 !important;
+            color: #25312f !important;
+            font-size: 17px !important;
+            line-height: 1.2 !important;
+            font-weight: 850 !important;
+        }
+
+        .decision-panel__row {
+            display: grid;
+            grid-template-columns: 96px 1fr;
+            gap: 7px;
+            padding: 6px 0;
+            border-top: 1px solid #e6ded2;
+        }
+
+        .decision-panel__row span {
+            color: #66716e;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1.3;
+        }
+
+        .decision-panel__row strong {
+            color: #25312f;
+            font-size: 13px;
+            font-weight: 800;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+
+        .strategy-card-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(220px, 1fr));
+            gap: 10px;
+            margin: 8px 0 16px;
+        }
+
+        .strategy-section,
+        .next-action-panel,
+        .excel-readonly-panel,
+        .compact-arrival-chart {
+            border: 1px solid #d8d1c6;
+            border-radius: 8px;
+            background: #fffdf8;
+            box-shadow: 0 1px 2px rgba(54, 46, 36, 0.05);
+        }
+
+        .strategy-section {
+            padding: 8px;
+            margin: 6px 0;
+        }
+
+        .strategy-section__head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .strategy-section__status,
+        .next-action-panel__label,
+        .excel-readonly-panel__label {
+            color: #2f6f68;
+            font-size: 11px;
+            font-weight: 900;
+            line-height: 1.2;
+            text-transform: uppercase;
+        }
+
+        .strategy-section__head p {
+            margin: 2px 0 0;
+            color: #66716e;
+            font-size: 12px !important;
+            line-height: 1.32 !important;
+        }
+
+        .strategy-section__head span {
+            flex: 0 0 auto;
+            border: 1px solid #cfd8d5;
+            border-radius: 999px;
+            background: #eef5f3;
+            color: #193b37;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: 850;
+        }
+
+        .strategy-section__cards {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(200px, 1fr));
+            gap: 7px;
+        }
+
+        .strategy-card-shell {
+            min-width: 0;
+        }
+
+        .strategy-section .scenario-card {
+            min-height: 108px;
+            border-radius: 8px;
+            padding: 8px;
+        }
+
+        .strategy-section .scenario-card__topline {
+            margin-bottom: 5px;
+        }
+
+        .strategy-section .scenario-card__name {
+            font-size: 14px;
+            line-height: 1.18;
+            margin-bottom: 4px;
+        }
+
+        .strategy-section .scenario-card__description {
+            min-height: 0;
+            max-height: 30px;
+            overflow: hidden;
+            font-size: 11px;
+            line-height: 1.32;
+        }
+
+        .strategy-section .scenario-card__metrics {
+            gap: 6px;
+            margin-top: 5px;
+        }
+
+        .strategy-section .scenario-card__metric {
+            border-radius: 8px;
+            padding: 6px;
+        }
+
+        .strategy-section .scenario-card__metric-label {
+            font-size: 10px;
+            margin-bottom: 2px;
+        }
+
+        .strategy-section .scenario-card__metric-value {
+            font-size: 12px;
+            line-height: 1.2;
+        }
+
+        .strategy-card-shell__code {
+            margin-bottom: 4px;
+            color: #53615e;
+            font-size: 11px;
+            font-weight: 850;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+
+        .strategy-card-inactive {
+            opacity: 0.72;
+        }
+
+        .strategy-card-inactive .scenario-card {
+            background: #fbfaf6;
+        }
+
+        .compact-arrival-chart {
+            padding: 10px;
+            margin: 6px 0 8px;
+        }
+
+        .scenario-inline-chart-title {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin: 4px 0 0;
+            color: #25312f;
+            font-size: 12px;
+            line-height: 1.25;
+        }
+
+        .scenario-inline-chart-title strong {
+            font-size: 13px;
+            font-weight: 900;
+        }
+
+        .scenario-inline-chart-title span {
+            color: #66716e;
+            font-size: 11px;
+            font-weight: 760;
+        }
+
+        .compact-arrival-target {
+            margin-bottom: 7px;
+            color: #636967;
+            font-size: 12px;
+            font-weight: 850;
+        }
+
+        .compact-arrival-row {
+            display: grid;
+            grid-template-columns: minmax(136px, 0.28fr) minmax(160px, 1fr) 86px;
+            gap: 8px;
+            align-items: center;
+            padding: 4px 0;
+        }
+
+        .compact-arrival-row__label {
+            color: #25312f;
+            font-size: 12px;
+            font-weight: 850;
+            line-height: 1.22;
+            overflow-wrap: anywhere;
+        }
+
+        .compact-arrival-row__label span {
+            display: block;
+            color: #66716e;
+            font-size: 10px;
+            font-weight: 760;
+        }
+
+        .compact-arrival-row__track {
+            height: 14px;
+            border-radius: 999px;
+            background: #ece6dc;
+            overflow: hidden;
+        }
+
+        .compact-arrival-row__bar {
+            height: 100%;
+            border-radius: 999px;
+            background: #2f6f68;
+        }
+
+        .compact-arrival-row__bar--p {
+            background: #b48632;
+        }
+
+        .compact-arrival-row__bar--o {
+            background: #567c5d;
+        }
+
+        .compact-arrival-row__bar--n {
+            background: #51758c;
+        }
+
+        .compact-arrival-row__bar.is-selected {
+            box-shadow: inset 0 0 0 2px rgba(37, 49, 47, 0.34);
+        }
+
+        .compact-arrival-row__value {
+            color: #25312f;
+            font-size: 12px;
+            font-weight: 850;
+            text-align: right;
+        }
+
+        .next-action-panel {
+            padding: 10px 12px;
+            margin: 10px 0;
+        }
+
+        .next-action-panel h3,
+        .excel-readonly-panel h3 {
+            margin: 3px 0 6px !important;
+            padding: 0 !important;
+            border: 0 !important;
+            color: #25312f !important;
+            font-size: 15px !important;
+            font-weight: 850 !important;
+        }
+
+        .next-action-panel ul {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .next-action-panel li {
+            margin: 2px 0;
+            color: #25312f;
+            font-size: 13px !important;
+            line-height: 1.38 !important;
+        }
+
+        .excel-readonly-panel {
+            padding: 10px 12px;
+            margin: 8px 0;
+        }
+
+        .excel-readonly-panel p {
+            margin: 0;
+            color: #66716e;
+            font-size: 12px !important;
+            line-height: 1.38 !important;
+        }
+
+        .strategy-card,
+        .strategy-card-under,
+        .strategy-card-over,
+        .strategy-card-neutral {
+            border-radius: 8px;
+        }
+
+        .strategy-card-under {
+            border-color: #d1b98a;
+            background: #f6ead4;
+        }
+
+        .strategy-card-over {
+            border-color: #9fc0a5;
+            background: #dfe9de;
+        }
+
+        .strategy-card-neutral {
+            border-color: #a6b9cb;
+            background: #dce6ed;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail {
+            max-width: 244px;
+            padding: 8px;
+            border: 1px solid #d8d1c6;
+            border-radius: 8px;
+            background: #fffdf8;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail__title {
+            margin: 0 0 8px;
+            color: #66716e;
+            font-size: 11px;
+            font-weight: 900;
+            letter-spacing: 0;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail a.nav-item,
+        section[data-testid="stSidebar"] .nav-rail a.nav-item:visited,
+        .mini-nav a.nav-item,
+        .mini-nav a.nav-item:visited {
+            display: block;
+            position: relative;
+            margin: 3px 0;
+            padding: 8px 10px 8px 12px;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            background: transparent;
+            color: #25312f !important;
+            text-decoration: none !important;
+            box-shadow: none;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail a.nav-item:hover,
+        .mini-nav a.nav-item:hover {
+            border-color: #d2dfdc;
+            background: #f3f6f4;
+            color: #193b37 !important;
+            text-decoration: none !important;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail a.nav-item.active,
+        .mini-nav a.nav-item.active {
+            border-color: #a8c9c3;
+            border-left: 4px solid #2f6f68;
+            background: #dcebe8;
+            color: #193b37 !important;
+            font-weight: 850;
+            text-decoration: none !important;
+        }
+
+        section[data-testid="stSidebar"] .nav-item__label,
+        .mini-nav .nav-item__label {
+            display: block;
+            color: inherit !important;
+            font-size: 13px;
+            font-weight: 820;
+            line-height: 1.25;
+            text-decoration: none !important;
+        }
+
+        section[data-testid="stSidebar"] .nav-item__marker,
+        .mini-nav .nav-item__marker {
+            display: inline-block;
+            margin-top: 3px;
+            color: #2f6f68;
+            font-size: 10px;
+            font-weight: 900;
+            line-height: 1;
+        }
+
+        .mini-nav {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 6px 0 8px;
+        }
+
+        .mini-nav a.nav-item,
+        .mini-nav a.nav-item:visited {
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            min-height: 30px;
+            margin: 0;
+            padding: 6px 10px;
+            border-radius: 999px;
+        }
+
+        .mini-nav .nav-item__label {
+            font-size: 12px;
+            line-height: 1;
+        }
+
+        .mini-nav .nav-item__marker {
+            display: none;
+        }
+
+        @media (max-width: 1180px) {
+            .workbench-fact-row,
+            .strategy-card-row,
+            .strategy-section__cards {
+                grid-template-columns: repeat(2, minmax(180px, 1fr));
+            }
+
+            .decision-panel,
+            .projection-chart-card {
+                min-height: auto;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .workbench-fact-row,
+            .strategy-card-row,
+            .strategy-section__cards,
+            .compact-arrival-row,
+            .decision-panel__row {
+                grid-template-columns: 1fr;
+            }
+
+            .page-header-compact {
+                align-items: flex-start;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(get_pace_check_css(), unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        :root {
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+            --font-app-title: 16px;
+            --font-page-title: 20px;
+            --font-section-title: 16px;
+            --font-card-title: 14px;
+            --font-body: 13px;
+            --font-body-large: 14px;
+            --font-caption: 12px;
+            --font-overline: 11px;
+            --font-metric-value: 17px;
+            --font-nav-title: 13px;
+            --font-nav-subtitle: 11px;
+            --font-chart-axis: 11px;
+            --font-chart-legend: 12px;
+            --line-body: 1.62;
+            --line-tight: 1.32;
+            --line-card: 1.56;
+            --app-bg: #f5f7fa;
+            --surface: #ffffff;
+            --surface-muted: #f7f9fb;
+            --surface-soft: #eef6f5;
+            --line-soft: #d8e0e7;
+            --line-strong: #bcc8d4;
+            --text-main: #202833;
+            --text-muted: #65717f;
+            --teal: #14756f;
+            --teal-soft: #e6f3f1;
+            --amber: #b7791f;
+            --slate: #536170;
+            --chart-bg: #f7f9fb;
+            --bg: var(--app-bg);
+            --ink: var(--text-main);
+            --ink-2: var(--text-muted);
+            --muted: #7d8793;
+            --line: var(--line-soft);
+            --surface-2: var(--surface-muted);
+            --radius-lg: 8px;
+            --radius-md: 8px;
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        html,
+        body,
+        .stApp,
+        .block-container,
+        .page-shell,
+        .workbench-shell,
+        .same-window-top-status,
+        .top-status-bar,
+        .nav-rail,
+        .metric-card,
+        .metric-card-compact,
+        .decision-panel,
+        .report-card,
+        .excel-card,
+        .projection-chart-card,
+        .section-header,
+        textarea,
+        input,
+        button,
+        table {
+            font-family: var(--font-sans) !important;
+        }
+
+        .stApp {
+            background: var(--app-bg) !important;
+            color: var(--text-main) !important;
+            font-size: var(--font-body) !important;
+            line-height: var(--line-body) !important;
+        }
+
+        .block-container {
+            max-width: 1440px;
+            padding-top: 2.35rem !important;
+            padding-left: clamp(1rem, 2vw, 1.75rem) !important;
+            padding-right: clamp(1rem, 2vw, 1.75rem) !important;
+            padding-bottom: 3rem !important;
+        }
+
+        .page-shell {
+            display: block;
+            padding-top: 20px;
+        }
+
+        [data-testid="stHeader"] {
+            background: rgba(245, 247, 250, 0.96) !important;
+            border-bottom: 1px solid var(--line-soft) !important;
+        }
+
+        h1,
+        .page-header h1,
+        .pace-hero-title {
+            font-family: var(--font-sans) !important;
+            font-size: var(--font-page-title) !important;
+            font-weight: 700 !important;
+            line-height: var(--line-tight) !important;
+            letter-spacing: 0 !important;
+            margin: 0 0 6px !important;
+        }
+
+        h2,
+        .section-header__title {
+            font-size: var(--font-section-title) !important;
+            font-weight: 700 !important;
+            line-height: var(--line-tight) !important;
+            letter-spacing: 0 !important;
+        }
+
+        h3,
+        .projection-chart-card__label,
+        .decision-panel h2,
+        .next-action-panel h3,
+        .excel-readonly-panel h3 {
+            font-size: var(--font-card-title) !important;
+            font-weight: 700 !important;
+            line-height: var(--line-tight) !important;
+            letter-spacing: 0 !important;
+        }
+
+        p,
+        li,
+        label,
+        div[data-testid="stMarkdownContainer"] {
+            font-size: var(--font-body) !important;
+            font-weight: 400 !important;
+            line-height: var(--line-body) !important;
+            letter-spacing: 0 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        div[data-testid="stCaptionContainer"],
+        div[data-testid="stCaptionContainer"] p,
+        small,
+        .section-header__subtitle,
+        .projection-chart-card__copy,
+        .page-header__subtitle {
+            color: var(--text-muted) !important;
+            font-size: var(--font-caption) !important;
+            font-weight: 400 !important;
+            line-height: 1.55 !important;
+        }
+
+        .page-header {
+            display: flow-root;
+            min-width: 0;
+            margin: 0 0 12px !important;
+            padding: 14px 16px 15px !important;
+            overflow: hidden;
+        }
+
+        .page-header-compact {
+            min-width: 0;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden;
+        }
+
+        .workbench-shell.top-status-bar {
+            margin: 0 0 16px !important;
+        }
+
+        .page-header > *:first-child,
+        .page-header-compact > *:first-child,
+        .section-header > *:first-child,
+        .metric-card-compact > *:first-child,
+        .kpi-card > *:first-child,
+        .scenario-card > *:first-child,
+        .report-card > *:first-child,
+        .excel-card > *:first-child,
+        .next-action-panel > *:first-child,
+        .excel-readonly-panel > *:first-child,
+        .report-memo-card > *:first-child,
+        .history-purpose-card > *:first-child {
+            margin-top: 0 !important;
+        }
+
+        .page-header > *:last-child,
+        .page-header-compact > *:last-child,
+        .section-header > *:last-child,
+        .metric-card-compact > *:last-child,
+        .kpi-card > *:last-child,
+        .scenario-card > *:last-child,
+        .report-card > *:last-child,
+        .excel-card > *:last-child,
+        .next-action-panel > *:last-child,
+        .excel-readonly-panel > *:last-child,
+        .report-memo-card > *:last-child,
+        .history-purpose-card > *:last-child {
+            margin-bottom: 0 !important;
+        }
+
+        .page-header h1 {
+            margin: 4px 0 0 !important;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+        }
+
+        .page-header__subtitle {
+            margin-top: 7px !important;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+        }
+
+        .page-header__eyebrow,
+        .page-header-compact__eyebrow,
+        .projection-chart-card__label + .projection-chart-card__copy,
+        .decision-panel__label,
+        .next-action-panel__label,
+        .excel-readonly-panel__label,
+        .nav-rail__title {
+            letter-spacing: 0.02em !important;
+        }
+
+        .page-header__eyebrow,
+        .page-header-compact__eyebrow,
+        .decision-panel__label,
+        .next-action-panel__label,
+        .excel-readonly-panel__label,
+        .nav-rail__title {
+            display: block;
+            max-width: 100%;
+            color: var(--teal) !important;
+            font-size: var(--font-overline) !important;
+            font-weight: 700 !important;
+            line-height: 1.2 !important;
+            text-transform: none;
+            overflow-wrap: anywhere;
+        }
+
+        .same-window-top-status {
+            display: grid;
+            grid-template-columns: minmax(180px, 0.7fr) auto minmax(0, 1.3fr);
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+            margin: 22px 0 18px;
+            padding: 13px 16px;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: var(--surface);
+            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06);
+        }
+
+        .same-window-top-status__brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            color: var(--text-main);
+            font-size: var(--font-app-title);
+            font-weight: 700;
+            line-height: 1.35;
+        }
+
+        .same-window-top-status__brand span:last-child {
+            min-width: 0;
+        }
+
+        .same-window-top-status__brand small {
+            display: block;
+            margin-top: 1px;
+            font-size: var(--font-nav-subtitle) !important;
+            font-weight: 500;
+        }
+
+        .same-window-top-status__page {
+            color: var(--text-main);
+            font-size: var(--font-card-title);
+            font-weight: 700;
+            line-height: 1.35;
+            min-width: 0;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
+        .same-window-top-status__meta {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .pace-brand-mark {
+            width: 24px !important;
+            height: 24px !important;
+            border-radius: 7px !important;
+            flex: 0 0 auto;
+        }
+
+        .pace-pill {
+            min-width: 0;
+            min-height: 28px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size: var(--font-nav-subtitle) !important;
+            font-weight: 500 !important;
+            line-height: 1.32 !important;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 220px;
+        }
+
+        section[data-testid="stSidebar"] {
+            background: var(--surface-muted) !important;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail {
+            max-width: 100%;
+            min-width: 0;
+            padding: 4px 0 8px;
+            border: 0;
+            background: transparent;
+        }
+
+        section[data-testid="stSidebar"] .nav-rail__title {
+            margin: 0 0 8px;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button {
+            min-width: 0;
+            justify-content: flex-start;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: var(--font-nav-title) !important;
+            font-weight: 700 !important;
+            line-height: 1.42 !important;
+            white-space: normal;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+            text-align: left;
+        }
+
+        div[data-testid="stHorizontalBlock"],
+        div[data-testid="stHorizontalBlock"] > div,
+        div[data-testid="column"],
+        div[data-testid="stVerticalBlock"],
+        div[data-testid="stVerticalBlock"] > div,
+        div[data-testid="stDataFrame"],
+        div[data-testid="stTable"],
+        div[data-testid="stMetric"],
+        .metric-card,
+        .metric-card-compact,
+        .kpi-grid,
+        .kpi-card,
+        .decision-panel,
+        .report-card,
+        .excel-card,
+        .nav-item,
+        .projection-chart-card,
+        .section-header,
+        .strategy-section,
+        .strategy-section__head,
+        .strategy-section__cards,
+        .strategy-card-shell,
+        .scenario-card,
+        .scenario-card__metrics,
+        .report-memo-card,
+        .history-purpose-card {
+            min-width: 0;
+        }
+
+        .text-wrap,
+        .page-header,
+        .page-header-compact,
+        .section-header,
+        .metric-card,
+        .metric-card-compact,
+        .decision-panel,
+        .report-card,
+        .excel-card,
+        .projection-chart-card,
+        .kpi-card,
+        .scenario-card,
+        .strategy-section,
+        .compact-arrival-chart,
+        .report-memo-card,
+        .history-purpose-card {
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .page-header,
+        .section-header,
+        .metric-card-compact,
+        .kpi-card,
+        .scenario-card,
+        .report-card,
+        .excel-card,
+        .next-action-panel,
+        .excel-readonly-panel,
+        .report-memo-card,
+        .history-purpose-card {
+            overflow: hidden;
+        }
+
+        .text-truncate {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .line-clamp-2 {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .pace-mode-card {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(260px, 0.86fr);
+            align-items: center;
+            gap: 5px 14px;
+            margin: 6px 0 12px !important;
+            padding: 12px 14px !important;
+            border: 1px solid #bdd8d4;
+            border-left: 4px solid var(--teal);
+            border-radius: 8px;
+            background: var(--surface);
+            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06);
+        }
+
+        .pace-mode-card.status-under-target {
+            border-color: #e5c5bd;
+            border-left-color: #b76351;
+            background: #fff8f6;
+        }
+
+        .pace-mode-card.status-on-target {
+            border-color: #e7d1a7;
+            border-left-color: var(--amber);
+            background: #fffaf0;
+        }
+
+        .pace-mode-card.status-over-target {
+            border-color: #bfdcc9;
+            border-left-color: #2d8b67;
+            background: #f5fbf7;
+        }
+
+        .pace-mode-card__label {
+            grid-column: 1;
+            color: var(--text-muted);
+            font-size: var(--font-overline) !important;
+            font-weight: 700 !important;
+            line-height: 1.2 !important;
+        }
+
+        .pace-mode-card__mode {
+            grid-column: 1;
+            margin-top: 1px;
+            color: var(--text-main);
+            font-size: 24px !important;
+            font-weight: 800 !important;
+            line-height: 1.15 !important;
+            overflow-wrap: anywhere;
+        }
+
+        .pace-mode-card.status-under-target .pace-mode-card__mode {
+            color: #854234;
+        }
+
+        .pace-mode-card.status-on-target .pace-mode-card__mode {
+            color: #805113;
+        }
+
+        .pace-mode-card.status-over-target .pace-mode-card__mode {
+            color: #1d6446;
+        }
+
+        .pace-mode-card__description {
+            grid-column: 1;
+            margin-top: 2px;
+            color: var(--text-muted);
+            font-size: var(--font-body) !important;
+            line-height: 1.45 !important;
+            overflow-wrap: anywhere;
+        }
+
+        .pace-mode-card__facts {
+            grid-column: 2;
+            grid-row: 1 / span 3;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 0;
+            min-width: 0;
+        }
+
+        .pace-mode-card__fact {
+            min-width: 0;
+            padding: 9px 10px;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.72);
+        }
+
+        .pace-mode-card__fact small {
+            display: block;
+            color: var(--text-muted) !important;
+            font-size: var(--font-overline) !important;
+            font-weight: 500 !important;
+            line-height: 1.25 !important;
+        }
+
+        .pace-mode-card__fact strong {
+            display: block;
+            margin-top: 4px;
+            color: var(--text-main);
+            font-size: var(--font-metric-value) !important;
+            font-weight: 700 !important;
+            line-height: 1.22 !important;
+            overflow-wrap: anywhere;
+        }
+
+        [data-testid="stMetric"] {
+            height: 100px !important;
+            min-height: 100px !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: flex-start !important;
+            border-radius: 8px !important;
+            background: var(--surface) !important;
+        }
+
+        [data-testid="stMetric"] > div {
+            min-height: 0 !important;
+        }
+
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricLabel"] p {
+            font-size: var(--font-overline) !important;
+            line-height: 1.3 !important;
+        }
+
+        [data-testid="stMetricValue"] {
+            font-size: var(--font-metric-value) !important;
+            font-weight: 700 !important;
+            line-height: 1.25 !important;
+            margin-top: 8px !important;
+            overflow-wrap: anywhere;
+        }
+
+        [data-testid="stMetricDelta"] {
+            font-size: var(--font-overline) !important;
+            line-height: 1.25 !important;
+            margin-top: 6px !important;
+        }
+
+        .kpi-grid {
+            grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+            gap: 8px !important;
+        }
+
+        .kpi-card {
+            min-height: 0 !important;
+            padding: 10px 11px !important;
+            border-radius: 8px !important;
+            line-height: 1.5 !important;
+        }
+
+        .kpi-card__label {
+            font-size: 12px !important;
+            font-weight: 700 !important;
+            line-height: 1.3 !important;
+        }
+
+        .kpi-card__value {
+            font-size: 17px !important;
+            font-weight: 700 !important;
+            line-height: 1.25 !important;
+            margin-top: 9px !important;
+            overflow-wrap: anywhere;
+        }
+
+        .kpi-card__sub {
+            font-size: 12px !important;
+            font-weight: 400 !important;
+            line-height: 1.38 !important;
+            margin-top: 8px !important;
+            overflow-wrap: anywhere;
+        }
+
+        .metric-card-compact {
+            min-height: 0;
+            height: auto;
+            padding: 9px 10px;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: var(--surface);
+        }
+
+        .metric-card-compact span {
+            color: var(--text-muted);
+            font-size: var(--font-overline);
+            font-weight: 700;
+            line-height: 1.32;
+        }
+
+        .metric-card-compact strong {
+            font-size: var(--font-metric-value);
+            font-weight: 700;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+        }
+
+        .report-card__rail {
+            margin-bottom: 16px !important;
+        }
+
+        .report-card__body {
+            display: grid;
+            gap: 0;
+            margin: 0;
+            color: var(--text-main);
+            font-family: var(--font-sans) !important;
+            white-space: normal;
+        }
+
+        .report-card__section {
+            padding: 0 0 15px;
+            margin: 0 0 15px;
+            border-bottom: 1px solid var(--line-soft);
+        }
+
+        .report-card__section:last-child {
+            padding-bottom: 0;
+            margin-bottom: 0;
+            border-bottom: 0;
+        }
+
+        .report-card__section-title {
+            margin: 0 0 9px !important;
+            color: var(--text-main);
+            font-size: 13px !important;
+            font-weight: 800 !important;
+            line-height: 1.35 !important;
+            letter-spacing: 0 !important;
+        }
+
+        .report-card__list {
+            display: grid;
+            gap: 8px;
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .report-card__list li,
+        .report-card__paragraph {
+            color: var(--text-main);
+            font-size: 13px !important;
+            line-height: 1.72 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .report-card__paragraph {
+            margin: 0;
+        }
+
+        .report-card__placeholder {
+            color: var(--text-muted);
+        }
+
+        .chart-first-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+            gap: 14px;
+            align-items: stretch;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) minmax(300px, 340px) !important;
+            gap: 16px !important;
+            align-items: stretch !important;
+            margin-top: 14px !important;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) > div {
+            display: flex !important;
+            width: 100% !important;
+            min-width: 0 !important;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) > div > div,
+        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) div[data-testid="stVerticalBlock"],
+        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) div[data-testid="stMarkdownContainer"]:has(.decision-panel) {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) {
+            display: flex !important;
+            flex-direction: column !important;
+            height: 100% !important;
+            border: 1px solid var(--line-soft) !important;
+            border-radius: 8px !important;
+            background: var(--chart-bg) !important;
+            padding: 14px 16px 12px !important;
+            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06) !important;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) .projection-chart-card {
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            background: var(--chart-bg) !important;
+            box-shadow: none !important;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) .projection-chart-card__head {
+            background: var(--chart-bg) !important;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) > div,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) details,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) [data-testid="stElementContainer"],
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div[data-testid="stMarkdownContainer"],
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div[data-testid="stVegaLiteChart"],
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div[data-testid="stVegaLiteChart"] > div,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) canvas,
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) svg {
+            background: var(--chart-bg) !important;
+        }
+
+        .projection-chart-card,
+        .decision-panel,
+        .report-card,
+        .excel-card,
+        .empty-state,
+        .strategy-section,
+        .next-action-panel,
+        .excel-readonly-panel,
+        .compact-arrival-chart,
+        .report-memo-card,
+        .history-purpose-card {
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: var(--surface);
+            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06);
+        }
+
+        .projection-chart-card {
+            padding: 0;
+            min-height: 0;
+            border: 0;
+            box-shadow: none;
+        }
+
+        .projection-chart-card__head {
+            gap: 12px;
+            margin-bottom: 6px;
+        }
+
+        .projection-chart-card__copy {
+            max-width: 760px;
+            margin-top: 3px;
+            line-height: 1.55 !important;
+        }
+
+        .chart-legend-row {
+            gap: 8px 14px;
+            padding: 9px 0 0;
+            margin-bottom: 10px;
+            color: var(--text-muted);
+            font-size: var(--font-chart-legend) !important;
+            font-weight: 500;
+            line-height: 1.42;
+        }
+
+        .chart-legend-row span {
+            min-width: 0;
+            white-space: normal;
+        }
+
+        .chart-legend-row i {
+            width: 18px;
+            border-top-width: 3px;
+        }
+
+        .chart-legend-row .legend-target {
+            border-color: #8a94a1;
+            border-top-style: dashed;
+        }
+
+        .chart-legend-row .legend-actual {
+            border-color: var(--teal);
+        }
+
+        .chart-legend-row .legend-projection {
+            border-color: var(--amber);
+            border-top-style: dashed;
+        }
+
+        .chart-legend-row .legend-band {
+            background: rgba(183, 121, 31, 0.16);
+        }
+
+        .chart-legend-row .legend-close {
+            border-color: var(--slate);
+            border-top-style: dashed;
+        }
+
+        .chart-legend-row .legend-current {
+            background: var(--text-main);
+        }
+
+        .projection-chart-caption {
+            clear: both;
+            display: block;
+            margin: 8px 0 0;
+            padding-top: 8px;
+            border-top: 1px solid var(--line-soft);
+            color: var(--text-muted);
+            font-size: var(--font-caption) !important;
+            line-height: 1.6 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        div[data-testid="stMarkdownContainer"]:has(.scenario-inline-chart-title) {
+            display: block !important;
+            margin: 10px 0 12px !important;
+            position: relative;
+            z-index: 1;
+        }
+
+        .scenario-inline-chart-title {
+            display: grid !important;
+            grid-template-columns: auto minmax(0, 1fr);
+            align-items: end;
+            gap: 4px 10px;
+            width: 100%;
+            min-height: 28px;
+            margin: 0 !important;
+            padding: 0 0 4px;
+            color: var(--text-main);
+            line-height: 1.35 !important;
+            overflow: visible;
+        }
+
+        .scenario-inline-chart-title strong,
+        .scenario-inline-chart-title span {
+            display: block;
+            min-width: 0;
+            line-height: 1.35 !important;
+            overflow-wrap: anywhere;
+        }
+
+        .scenario-inline-chart-title strong {
+            font-size: var(--font-body) !important;
+            font-weight: 800 !important;
+        }
+
+        .scenario-inline-chart-title span {
+            color: var(--text-muted);
+            font-size: var(--font-overline) !important;
+            font-weight: 500 !important;
+        }
+
+        div[data-testid="stAlert"] {
+            clear: both;
+            position: relative;
+            z-index: 0;
+        }
+
+        .decision-panel {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            min-height: 100%;
+            padding: 14px;
+        }
+
+        .decision-panel__row {
+            grid-template-columns: 96px minmax(0, 1fr);
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            min-height: 34px;
+            padding: 7px 0;
+        }
+
+        .decision-panel__row span {
+            min-width: 0;
+            font-size: var(--font-caption) !important;
+            font-weight: 500 !important;
+            line-height: 1.38 !important;
+        }
+
+        .decision-panel__row strong {
+            font-size: var(--font-body) !important;
+            font-weight: 600 !important;
+            line-height: 1.38 !important;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+        }
+
+        .decision-panel__row:last-child {
+            align-items: start;
+            padding-bottom: 0;
+        }
+
+        .workbench-fact-row {
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .strategy-section .scenario-card__description {
+            max-height: none;
+        }
+
+        .strategy-section {
+            padding: 12px;
+            margin: 10px 0 14px;
+        }
+
+        .strategy-section.is-active-management {
+            border-top: 3px solid rgba(20, 117, 111, 0.55);
+            background: #fbfefe;
+        }
+
+        .strategy-section__head {
+            gap: 14px;
+            margin-bottom: 10px;
+        }
+
+        .strategy-section__head p {
+            line-height: 1.55 !important;
+        }
+
+        .strategy-section__head span {
+            display: inline-flex;
+            align-items: center;
+            min-width: 0;
+            border: 0;
+            background: transparent;
+            color: #0f665e;
+            padding: 0;
+            font-size: var(--font-overline) !important;
+            font-weight: 700 !important;
+            line-height: 1.3 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .strategy-card-shell__badge {
+            display: inline-flex;
+            align-items: center;
+            min-width: 0;
+            border: 1px solid var(--line-soft);
+            border-radius: 999px;
+            background: var(--surface-muted);
+            color: var(--text-muted);
+            padding: 3px 7px;
+            font-size: var(--font-overline) !important;
+            font-weight: 700 !important;
+            line-height: 1.3 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .strategy-card-shell__head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+            min-width: 0;
+            margin-bottom: 5px;
+        }
+
+        .strategy-card-shell__badge.is-reference {
+            border-color: var(--line-soft);
+            background: var(--surface-muted);
+            color: var(--text-muted);
+        }
+
+        .strategy-card-shell__badge.is-recommended-badge {
+            border-color: #bdd8d4;
+            background: #e9f5f2;
+            color: #0f665e;
+        }
+
+        .strategy-card-active {
+            border-left: 0;
+            border-radius: 0;
+            padding-left: 0;
+        }
+
+        .strategy-card-active .scenario-card {
+            border-color: var(--line-soft) !important;
+            box-shadow: none !important;
+        }
+
+        .strategy-card-active.is-recommended .scenario-card {
+            border-left: 1px solid rgba(20, 117, 111, 0.2) !important;
+            background: #f7fcfa;
+            box-shadow: inset 0 0 0 1px rgba(20, 117, 111, 0.16) !important;
+        }
+
+        .strategy-card-shell__code {
+            line-height: 1.35 !important;
+            overflow-wrap: anywhere;
+        }
+
+        .strategy-section .scenario-card {
+            min-height: 0;
+        }
+
+        .strategy-section .scenario-card.is-emphasis {
+            box-shadow: none !important;
+        }
+
+        .strategy-card-active.is-recommended .scenario-card.is-emphasis {
+            box-shadow: inset 0 0 0 1px rgba(20, 117, 111, 0.16) !important;
+        }
+
+        .strategy-section .status-badge {
+            border-color: transparent;
+            background: transparent;
+            color: #0f665e;
+            padding: 0;
+            gap: 5px;
+            font-size: 11px !important;
+            box-shadow: none;
+        }
+
+        .strategy-section .status-badge::before {
+            width: 6px;
+            height: 6px;
+            opacity: 0.72;
+        }
+
+        .strategy-section .scenario-card__name {
+            font-size: 14px !important;
+            line-height: 1.35 !important;
+        }
+
+        .strategy-section .scenario-card__description {
+            font-size: 12px !important;
+            line-height: 1.5 !important;
+        }
+
+        .strategy-section .scenario-card__metric-label {
+            font-size: 11px !important;
+            line-height: 1.32 !important;
+        }
+
+        .strategy-section .scenario-card__metric-value {
+            font-size: 12px !important;
+            line-height: 1.35 !important;
+        }
+
+        .report-ia-note,
+        .history-purpose-card {
+            margin: 8px 0 12px;
+            padding: 12px 14px;
+            color: var(--text-main);
+            font-size: var(--font-body) !important;
+            line-height: var(--line-card) !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .report-meta-row,
+        .history-question-grid,
+        .history-next-actions {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 8px 0 12px;
+        }
+
+        .report-meta-row span,
+        .history-question-grid span,
+        .history-next-actions span {
+            display: block;
+            min-width: 0;
+            padding: 9px 10px;
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            background: var(--surface-muted);
+            color: var(--text-main);
+            font-size: var(--font-caption) !important;
+            line-height: 1.55 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .report-memo-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+            margin: 8px 0 12px;
+        }
+
+        .report-memo-card {
+            padding: 12px;
+            min-height: 0;
+        }
+
+        .report-memo-card strong {
+            display: block;
+            margin-bottom: 5px;
+            color: var(--text-main);
+            font-size: var(--font-card-title);
+            font-weight: 700;
+            line-height: var(--line-tight);
+        }
+
+        .report-memo-card span {
+            display: block;
+            color: var(--text-muted);
+            font-size: var(--font-body);
+            line-height: var(--line-card);
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        textarea[aria-label="복사용 보고문"],
+        textarea[aria-label="보고 메모"] {
+            min-height: 320px;
+            font-family: var(--font-sans) !important;
+            font-size: var(--font-body-large) !important;
+            line-height: 1.6 !important;
+            word-break: keep-all;
+            overflow-wrap: anywhere;
+        }
+
+        .history-purpose-card h3 {
+            margin: 0 0 6px !important;
+            padding: 0 !important;
+            border: 0 !important;
+        }
+
+        div[data-testid="stDataFrame"],
+        div[data-testid="stTable"] {
+            min-width: 0;
+            overflow: auto;
+        }
+
+        div[data-testid="stDataFrame"] *,
+        div[data-testid="stTable"] *,
+        [data-testid="stDataEditor"] * {
+            font-family: var(--font-sans) !important;
+            font-size: var(--font-caption) !important;
+            line-height: 1.5 !important;
+        }
+
+        @media (max-width: 1180px) {
+            .chart-first-grid,
+            div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) {
+                grid-template-columns: 1fr !important;
+            }
+
+            .decision-panel {
+                width: 100%;
+            }
+
+            .workbench-fact-row,
+            .report-meta-row,
+            .history-question-grid,
+            .history-next-actions {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 900px) {
+            section[data-testid="stSidebar"] {
+                width: 100% !important;
+            }
+
+            .block-container {
+                padding-top: 2rem !important;
+            }
+
+            .same-window-top-status {
+                grid-template-columns: 1fr;
+                align-items: start;
+                margin-top: 18px;
+            }
+
+            .same-window-top-status__meta {
+                justify-content: flex-start;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .pace-mode-card {
+                grid-template-columns: 1fr;
+                padding: 12px 14px !important;
+            }
+
+            .pace-mode-card__mode {
+                font-size: 22px !important;
+            }
+
+            .pace-mode-card__facts {
+                grid-column: 1;
+                grid-row: auto;
+                grid-template-columns: 1fr;
+                margin-top: 6px;
+            }
+
+            .workbench-fact-row,
+            .report-meta-row,
+            .report-memo-grid,
+            .history-question-grid,
+            .history-next-actions {
+                grid-template-columns: 1fr;
+            }
+
+            .scenario-inline-chart-title {
+                grid-template-columns: 1fr;
+                align-items: start;
+            }
+
+            .pace-pill {
+                max-width: 100%;
+            }
         }
         </style>
         """,
@@ -1426,10 +5802,11 @@ def default_as_of_date(
     today: object | None = None,
 ) -> pd.Timestamp:
     """Return the previous input business date before today."""
-    _ = metric
     dates = pd.to_datetime(df["date"], errors="raise").dt.normalize()
     current_date = _current_app_date(today)
-    previous_business_dates = dates.loc[dates.dt.date < current_date]
+    previous_mask = dates.dt.date < current_date
+
+    previous_business_dates = dates.loc[previous_mask]
     if not previous_business_dates.empty:
         return previous_business_dates.iloc[-1]
     return dates.iloc[0]
@@ -1453,11 +5830,31 @@ def normalize_direct_input_edits(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_saved_actuals(path: str | Path = SAVED_ACTUALS_PATH) -> pd.DataFrame:
-    """Load locally saved cumulative actual values."""
+    """Load locally saved cumulative actual values without creating or rewriting files."""
     saved_path = Path(path)
     if not saved_path.exists():
         return pd.DataFrame(columns=SAVED_ACTUAL_COLUMNS)
-    return _normalize_saved_actuals(pd.read_csv(saved_path, encoding="utf-8-sig"))
+    return normalize_saved_actuals_schema(pd.read_csv(saved_path, encoding="utf-8-sig"))
+
+
+def normalize_saved_actuals_schema(saved_actuals: pd.DataFrame) -> pd.DataFrame:
+    """Normalize saved actuals in memory only."""
+    return _normalize_saved_actuals(saved_actuals)
+
+
+def save_saved_actuals(
+    saved_actuals: pd.DataFrame,
+    path: str | Path = SAVED_ACTUALS_PATH,
+) -> Path:
+    """Persist normalized saved actuals after an explicit user action."""
+    saved_path = Path(path)
+    saved_path.parent.mkdir(parents=True, exist_ok=True)
+    normalize_saved_actuals_schema(saved_actuals).to_csv(
+        saved_path,
+        index=False,
+        encoding="utf-8-sig",
+    )
+    return saved_path
 
 
 def save_actual_values(
@@ -1473,8 +5870,7 @@ def save_actual_values(
             load_saved_actuals(saved_path),
             saved_actuals,
         )
-    saved_actuals.to_csv(saved_path, index=False, encoding="utf-8-sig")
-    return saved_path
+    return save_saved_actuals(saved_actuals, saved_path)
 
 
 def apply_saved_actuals(
@@ -1482,7 +5878,7 @@ def apply_saved_actuals(
     saved_actuals: pd.DataFrame,
 ) -> pd.DataFrame:
     """Apply saved actual values to matching date and business-day rows."""
-    saved = _normalize_saved_actuals(saved_actuals)
+    saved = normalize_saved_actuals_schema(saved_actuals)
     if saved.empty:
         return df.copy()
 
@@ -2460,6 +6856,15 @@ def build_strategy_level_table(
         result = result.loc[
             result["scenario_id"].astype(str).str.startswith(f"{forecast_key}_")
         ]
+    result = result.copy()
+    if "scenario_id" in result.columns:
+        result["forecast_model"] = result["scenario_id"].astype(str).map(
+            lambda value: _split_scenario_id(value)[0]
+        )
+    result["strategy_difference_summary"] = result.apply(
+        _strategy_difference_summary,
+        axis=1,
+    )
 
     available_columns = [
         column for column in STRATEGY_LEVEL_COLUMNS if column in result.columns
@@ -2467,6 +6872,79 @@ def build_strategy_level_table(
     if not available_columns:
         return pd.DataFrame(columns=STRATEGY_LEVEL_COLUMNS)
     return result.loc[:, available_columns].reset_index(drop=True)
+
+
+def _strategy_difference_summary(row: pd.Series) -> str:
+    strategy_id = str(row.get("provision_strategy") or row.get("overachievement_strategy") or "")
+    scenario_id = str(row.get("scenario_id") or "")
+    strategy_key = _split_scenario_id(scenario_id)[1]
+    stretch = format_amount(row.get("stretch_uplift"))
+    buffer = format_amount(row.get("remaining_surplus_buffer"))
+    revised_target = format_amount(row.get("revised_monthly_target"))
+    minimum = format_amount(row.get("minimum_remaining_to_hit_target"))
+    relief = format_amount(row.get("relief_amount"))
+
+    if strategy_id == O1_TARGET_HOLD_BUFFER or strategy_key == "O1":
+        return f"공식 목표 유지, 초과 예상분 {buffer}을 안전버퍼로 관리"
+    if strategy_id == O2_STRETCH_TARGET_CAPTURE or strategy_key == "O2":
+        return f"{stretch}을 Stretch 목표로 전환, 운영 월 목표 {revised_target}"
+    if strategy_id == O3_QUALITY_GUARD_RELIEF or strategy_key == "O3":
+        return f"목표 달성 최소 잔여 {minimum}, 품질관리 여유 {relief} 분리"
+    if strategy_key.startswith("P"):
+        return "목표 미달분을 잔여 일자에 배분"
+    if strategy_key.startswith("N"):
+        return "목표 유지와 변동 리스크 모니터링"
+    return "운영 기준 비교"
+
+
+def build_strategy_effect_table(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> pd.DataFrame:
+    """Return O/P/N strategy differences with the forecast model held fixed."""
+    strategy_table = build_strategy_level_table(scenario_df, selected_scenario_id)
+    if strategy_table.empty or "scenario_id" not in strategy_table.columns:
+        return pd.DataFrame()
+
+    result = strategy_table.copy()
+    result["forecast_basis"] = result["scenario_id"].astype(str).map(
+        lambda value: _split_scenario_id(value)[0]
+    )
+    result["strategy_key"] = result["scenario_id"].astype(str).map(
+        lambda value: _split_scenario_id(value)[1]
+    )
+    result["strategy_effect_type"] = result["strategy_key"].map(_strategy_effect_type_label)
+
+    preferred_columns = (
+        "forecast_basis",
+        "strategy_key",
+        "provision_strategy",
+        "strategy_effect_type",
+        "strategy_difference_summary",
+        "stretch_uplift",
+        "revised_monthly_target",
+        "remaining_surplus_buffer",
+        "minimum_remaining_to_hit_target",
+        "relief_amount",
+        "revised_remaining_target",
+    )
+    available_columns = [column for column in preferred_columns if column in result.columns]
+    return result.loc[:, available_columns].reset_index(drop=True)
+
+
+def _strategy_effect_type_label(strategy_key: object) -> str:
+    text = str(strategy_key or "")
+    if text == "O1":
+        return "버퍼 유지"
+    if text == "O2":
+        return "Stretch 전환"
+    if text == "O3":
+        return "품질 방어"
+    if text.startswith("P"):
+        return "미달 보정"
+    if text.startswith("N"):
+        return "유지/모니터링"
+    return "운영 기준"
 
 
 def build_strategy_level_chart_data(
@@ -2543,13 +7021,17 @@ def chart_value_format(unit: str) -> str:
 
 def build_close_cycle_chart_data(close_cycle_df: pd.DataFrame) -> pd.DataFrame:
     """Return close-cycle values ready for Streamlit charts."""
+    cumulative_source = build_close_cycle_cumulative_source(close_cycle_df)
     return _build_indexed_numeric_chart_data(
-        close_cycle_df,
+        cumulative_source,
         "cycle_end_date",
         (
             "target_sum",
             "actual_sum",
             "achievement_rate",
+            "target_cum",
+            "actual_cum",
+            "cumulative_achievement_rate",
         ),
     )
 
@@ -3049,6 +7531,44 @@ def build_summary_dict(
     }
 
 
+def list_latest_excel_outputs(output_dir: Path | None = None) -> pd.DataFrame:
+    """Return read-only metadata for existing Excel files under outputs/latest."""
+    latest_output_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR / "latest"
+    columns = ["파일명", "경로", "수정시각", "크기(bytes)", "공유구분"]
+    if not latest_output_dir.exists():
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, object]] = []
+    for path in sorted(latest_output_dir.iterdir(), key=lambda item: item.name.lower()):
+        if not path.is_file() or path.suffix.lower() != ".xlsx":
+            continue
+        stat = path.stat()
+        category = "daily_report" if path.name.startswith("daily_report_") else "reference"
+        rows.append(
+            {
+                "파일명": path.name,
+                "경로": f"outputs/latest/{path.name}",
+                "수정시각": pd.Timestamp.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "크기(bytes)": stat.st_size,
+                "공유구분": category,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _latest_existing_report_path(latest_files: pd.DataFrame) -> Path | None:
+    if latest_files.empty or "파일명" not in latest_files.columns:
+        return None
+    candidates = latest_files.loc[latest_files["파일명"].astype(str).str.startswith("daily_report_")]
+    if candidates.empty:
+        return None
+    paths = [OUTPUT_DIR / "latest" / str(name) for name in candidates["파일명"].tolist()]
+    existing = [path for path in paths if path.exists() and path.is_file()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)
+
+
 def build_excel_report_bytes(
     summary_dict: dict[str, Any],
     scenario_df: pd.DataFrame,
@@ -3060,10 +7580,11 @@ def build_excel_report_bytes(
     as_of_date: object,
 ) -> tuple[bytes, str]:
     """Export the calculated report to outputs and return bytes for download."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    latest_output_dir = OUTPUT_DIR / "latest"
+    latest_output_dir.mkdir(parents=True, exist_ok=True)
     date_token = pd.Timestamp(as_of_date).strftime("%Y%m%d")
     report_name = f"daily_report_{metric}_{date_token}.xlsx"
-    output_path = OUTPUT_DIR / report_name
+    output_path = latest_output_dir / report_name
     saved_path = export_daily_report(
         output_path,
         summary_dict,
@@ -3816,12 +8337,21 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
     return pd.DataFrame(), ""
 
 
-def _render_input_editor(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
+def _render_input_editor(
+    df: pd.DataFrame,
+    source_label: str,
+    audit_readonly: bool = False,
+) -> pd.DataFrame:
     st.header("2. 입력 수정")
     saved_actuals = _load_saved_actuals_for_ui()
-    df, default_source = apply_latest_upload_policy(df, source_label, saved_actuals)
+    df, default_source = apply_latest_upload_policy(
+        df,
+        source_label,
+        saved_actuals,
+        persist_uploaded_defaults=False,
+    )
     if default_source == "uploaded":
-        st.caption("업로드 입력값을 최신 실적 기본값으로 등록했습니다.")
+        st.caption("업로드 입력값을 현재 화면 기본값으로 사용합니다. 저장은 명시적 버튼 클릭 시에만 수행합니다.")
     elif default_source == "saved":
         st.caption(f"저장된 실적 기본값 {len(saved_actuals)}건을 불러왔습니다.")
 
@@ -3832,10 +8362,17 @@ def _render_input_editor(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
         st.session_state[source_key] = source_token
         st.session_state.pop(editor_key, None)
 
-    reset_col, clear_col = st.columns(2)
+    if audit_readonly:
+        st.info("읽기 전용 감리 모드: 저장된 실적값 저장/삭제 버튼이 비활성화됩니다.")
+
+    reset_col, clear_col, save_col = st.columns(3)
     if reset_col.button("입력값 초기화", key="reset_direct_input_editor"):
         st.session_state.pop(editor_key, None)
-    if clear_col.button("저장된 실적값 삭제", key="clear_saved_actuals"):
+    if clear_col.button(
+        "저장된 실적값 삭제",
+        key="clear_saved_actuals",
+        disabled=audit_readonly,
+    ):
         clear_saved_actuals()
         st.session_state.pop(editor_key, None)
         st.session_state.pop(source_key, None)
@@ -3851,7 +8388,13 @@ def _render_input_editor(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
         use_container_width=True,
     )
     normalized = normalize_direct_input_edits(_as_dataframe(edited_df))
-    save_actual_values(normalized)
+    if save_col.button(
+        "완료월 실제 실적 저장",
+        key="save_saved_actuals_explicit",
+        disabled=audit_readonly,
+    ):
+        saved_path = save_actual_values(normalized)
+        st.success(f"저장된 실적값을 갱신했습니다: {saved_path}")
     return normalized
 
 
@@ -3860,11 +8403,13 @@ def apply_latest_upload_policy(
     source_label: str,
     saved_actuals: pd.DataFrame,
     path: str | Path = SAVED_ACTUALS_PATH,
+    persist_uploaded_defaults: bool = True,
 ) -> tuple[pd.DataFrame, str]:
     """Apply the latest-value policy for uploaded current-month inputs."""
     if _is_current_upload_source(source_label):
         normalized = normalize_direct_input_edits(df)
-        save_actual_values(normalized, path)
+        if persist_uploaded_defaults:
+            save_actual_values(normalized, path)
         return normalized, "uploaded"
 
     if not saved_actuals.empty:
@@ -3940,48 +8485,57 @@ def _render_settings(
     base_config: dict[str, Any],
 ) -> tuple[str, pd.Timestamp, str, str, dict[str, Any]]:
     st.header("3. 기준 설정")
+    metric_default, as_of_default, forecast_default, provision_default, _ = _normalize_app_settings(
+        df,
+        base_config,
+    )
     metric = st.selectbox(
         "지표 선택",
         ["sales", "recognized"],
-        index=0,
+        index=["sales", "recognized"].index(metric_default),
         format_func=lambda value: METRIC_DISPLAY_LABELS.get(value, value),
+        key=PACE_METRIC_SESSION_KEY,
     )
     dates = pd.to_datetime(df["date"], errors="raise")
     date_values = [timestamp.date() for timestamp in dates]
-    default_date = default_as_of_date(df, metric).date()
+    default_date = pd.Timestamp(as_of_default).date()
     default_index = date_values.index(default_date) if default_date in date_values else 0
     as_of_date = st.selectbox(
         "기준일 선택",
         date_values,
         index=default_index,
-        key=f"as_of_date_{metric}_{default_date.isoformat()}",
+        key=PACE_AS_OF_DATE_SESSION_KEY,
     )
-    st.caption("기본 기준일은 입력표 date 컬럼에서 오늘보다 앞선 마지막 입력일입니다. 선택한 지표의 누적 실적은 해당 기준일까지 입력되어 있어야 계산됩니다.")
+    st.caption("기본 기준일은 입력표 기준 직전 영업일로 매일 갱신됩니다. 필요하면 다른 입력일을 선택할 수 있습니다.")
     forecast_choice = st.selectbox(
         "예측모델 선택",
         ["F1", "F2", "F3", COMPARE_LABEL],
-        index=3,
+        index=["F1", "F2", "F3", COMPARE_LABEL].index(forecast_default),
+        key=PACE_FORECAST_CHOICE_SESSION_KEY,
     )
     provision_choice = st.selectbox(
         "운영 전략 선택",
         ["P1", "P2", "P3", "O1", "O2", "O3", "N1", "N2", "N3", COMPARE_LABEL],
-        index=9,
+        index=["P1", "P2", "P3", "O1", "O2", "O3", "N1", "N2", "N3", COMPARE_LABEL].index(provision_default),
+        key=PACE_STRATEGY_CHOICE_SESSION_KEY,
     )
 
     col1, col2 = st.columns(2)
     close_day_cap_rate = col1.number_input(
         "마감일 목표 상한 배율",
         min_value=0.0,
-        value=float(base_config.get("close_day_cap_rate", 1.30)),
+        value=_session_float(PACE_CLOSE_CAP_SESSION_KEY, base_config.get("close_day_cap_rate", 1.30)),
         step=0.05,
         format="%.2f",
+        key=PACE_CLOSE_CAP_SESSION_KEY,
     )
     non_close_day_cap_rate = col2.number_input(
         "비마감일 목표 상한 배율",
         min_value=0.0,
-        value=float(base_config.get("non_close_day_cap_rate", 1.50)),
+        value=_session_float(PACE_NON_CLOSE_CAP_SESSION_KEY, base_config.get("non_close_day_cap_rate", 1.50)),
         step=0.05,
         format="%.2f",
+        key=PACE_NON_CLOSE_CAP_SESSION_KEY,
     )
     config = build_runtime_config(
         base_config,
@@ -4027,25 +8581,196 @@ def _render_selected_scenario_picker(
     )
 
 
+def _render_pace_check_header(df: pd.DataFrame, as_of_date: object) -> None:
+    context = _pace_header_context(df, as_of_date)
+    st.markdown(
+        render_pace_header(
+            as_of_date=as_of_date,
+            current_business_day_no=context["current_business_day_no"],
+            total_business_days=context["total_business_days"],
+            close_day_label=context["close_day_label"],
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _pace_header_context(df: pd.DataFrame, as_of_date: object) -> dict[str, object]:
+    if df.empty:
+        return {
+            "current_business_day_no": "계산 불가",
+            "total_business_days": "계산 불가",
+            "close_day_label": "입력 없음",
+        }
+
+    total_business_days = len(df)
+    if "business_day_no" in df.columns:
+        numeric_business_days = pd.to_numeric(df["business_day_no"], errors="coerce")
+        if numeric_business_days.notna().any():
+            total_business_days = int(numeric_business_days.max())
+
+    as_of_timestamp = pd.Timestamp(as_of_date).normalize()
+    dates = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    rows = df.loc[dates == as_of_timestamp]
+    if rows.empty:
+        return {
+            "current_business_day_no": "입력 행 없음",
+            "total_business_days": total_business_days,
+            "close_day_label": "입력 행 없음",
+        }
+
+    selected = rows.iloc[0]
+    current_business_day_no = selected.get("business_day_no", "계산 불가")
+    is_close_day = bool(_coerce_is_close_day(pd.Series([selected.get("is_close_day")])).iloc[0])
+    close_day_label = "마감일" if is_close_day else "일반 영업일"
+    return {
+        "current_business_day_no": current_business_day_no,
+        "total_business_days": total_business_days,
+        "close_day_label": close_day_label,
+    }
+
+
 def _render_kpis(
     validation_result: dict[str, Any],
     scenario_df: pd.DataFrame,
     next_close_result: dict[str, Any],
     selected_row: pd.Series,
 ) -> None:
-    for row in build_kpi_rows(
-        validation_result,
-        scenario_df,
-        next_close_result,
-        selected_row,
-    ):
-        cols = st.columns(len(row))
-        for col, (label, value) in zip(cols, row):
-            help_text = KPI_HELP_TEXTS.get(label)
-            if help_text:
-                col.metric(label, value, help=help_text)
-            else:
-                col.metric(label, value)
+    st.markdown(
+        render_operation_mode_card(
+            selected_row.get("target_status"),
+            target_variance=selected_row.get("target_variance"),
+            surplus_to_target=selected_row.get("surplus_to_target"),
+        ),
+        unsafe_allow_html=True,
+    )
+    _render_kpi_grid(validation_result, next_close_result, selected_row)
+
+    with st.expander("KPI 상세", expanded=False):
+        for row in build_kpi_rows(
+            validation_result,
+            scenario_df,
+            next_close_result,
+            selected_row,
+        ):
+            cols = st.columns(len(row))
+            for col, (label, value) in zip(cols, row):
+                help_text = KPI_HELP_TEXTS.get(label)
+                if help_text:
+                    col.metric(label, value, help=help_text)
+                else:
+                    col.metric(label, value)
+
+
+def _render_kpi_grid(
+    validation_result: dict[str, Any],
+    next_close_result: dict[str, Any],
+    selected_row: pd.Series,
+) -> None:
+    target_status = selected_row.get("target_status")
+    kpi_cards = (
+        render_kpi_card(
+            "현재 누적 실적",
+            format_krw(validation_result.get("current_actual_cum")),
+            sub="입력 기준 누적 실적",
+            target_status=target_status,
+        ),
+        render_kpi_card(
+            "월마감 예상 실적",
+            format_krw(selected_row.get("forecast_after_provision")),
+            sub=str(selected_row.get("scenario_id", "")),
+            focus=True,
+            target_status=target_status,
+        ),
+        render_kpi_card(
+            "월 목표",
+            format_krw(validation_result.get("monthly_target")),
+            sub="입력 일별 목표 합계",
+            target_status=target_status,
+        ),
+        render_kpi_card(
+            "목표 대비 차이",
+            format_krw(selected_row.get("target_variance")),
+            sub="양수는 초과, 음수는 미달",
+            focus=True,
+            target_status=target_status,
+        ),
+        render_kpi_card(
+            "목표 상태",
+            status_label(target_status),
+            sub="목표 보정/유지/초과달성 운영 구분",
+            target_status=target_status,
+        ),
+        render_kpi_card(
+            "초과 예상분",
+            format_krw(selected_row.get("surplus_to_target")),
+            sub="초과달성 운영 버퍼",
+            target_status=target_status,
+        ),
+        render_kpi_card(
+            "다음 마감 누적선 필요실적",
+            format_krw(
+                next_close_result.get("required_to_recover_next_close_cum")
+            ),
+            sub="월 부족분이 아니라 다음 마감일까지의 누적 계획선 기준입니다.",
+            focus=True,
+            target_status=target_status,
+        ),
+    )
+    st.markdown(
+        f'<div class="kpi-grid">{"".join(kpi_cards)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_scenario_check(scenario_df: pd.DataFrame) -> None:
+    if scenario_df.empty:
+        st.info("시나리오 카드로 표시할 데이터가 없습니다.")
+        return
+
+    cards = "".join(render_scenario_card(row) for row in scenario_df.to_dict("records"))
+    st.markdown(
+        render_section_header(
+            "시나리오 체크",
+            "P1/P2/P3는 목표 보정, O1/O2/O3는 초과달성 운영 전략으로 구분합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="scenario-grid">{cards}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_report_memo_card(report_text: str) -> None:
+    st.markdown(
+        render_section_header(
+            "보고 메모",
+            "복사해서 공유하기 쉬운 운영 요약입니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(render_report_card(report_text), unsafe_allow_html=True)
+
+
+def _render_history_insight_header() -> None:
+    st.markdown(
+        render_section_header(
+            "예측 이력",
+            "예측 이력은 과거 완료월의 예측값과 실제 마감 실적을 비교해, 현재 월 예측의 신뢰도와 모델별 편향을 점검하는 화면입니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<section class="history-purpose-card">'
+        '<h3>이 탭에서 확인할 질문</h3>'
+        '<div class="history-question-grid">'
+        "<span>과거 같은 영업일차에서 현재 페이스는 빠른가, 느린가?</span>"
+        "<span>F1/F2/F3 중 어느 모델이 최근 완료월에서 더 안정적이었는가?</span>"
+        "<span>현재 보고에서 보수/기준/상향 중 어느 관점으로 설명해야 하는가?</span>"
+        "</div>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
 
 
 def build_kpi_rows(
@@ -4105,6 +8830,8 @@ def _render_body(
     df: pd.DataFrame,
     config: dict[str, Any],
 ) -> None:
+    _render_scenario_check(scenario_df)
+
     _render_visuals(
         scenario_df,
         selected_scenario_id,
@@ -4145,15 +8872,16 @@ def _render_body(
         revised_targets_df,
     )
 
-    st.subheader("자동 보고문")
+    st.subheader("보고 메모")
     report_text = build_daily_report_text(
         scenario_df,
         next_close_result,
         selected_scenario_id=selected_scenario_id,
     )
+    _render_report_memo_card(report_text)
     _render_report_glossary_panel()
     report_key = hashlib.sha1(report_text.encode("utf-8")).hexdigest()[:12]
-    st.text_area("자동 보고문", value=report_text, height=320, key=f"auto_report_{report_key}")
+    st.text_area("보고 메모", value=report_text, height=320, key=f"auto_report_{report_key}")
 
     st.subheader("입력값 점검 결과")
     _render_validation(validation_result)
@@ -4161,7 +8889,7 @@ def _render_body(
 
 def _render_report_glossary_panel() -> None:
     glossary_df = build_report_glossary_df()
-    with st.expander("자동 보고문 고정 용어 정의", expanded=False):
+    with st.expander("보고 메모 고정 용어 정의", expanded=False):
         st.caption("보고문 본문과 분리해 별도로 운영하는 고정 기준값입니다.")
         tabs = st.tabs([group for group, _ in REPORT_GLOSSARY_GROUPS])
         for tab, (group, _) in zip(tabs, REPORT_GLOSSARY_GROUPS):
@@ -4186,6 +8914,8 @@ def _render_target_or_strategy_table(
     scenario_df: pd.DataFrame,
     selected_scenario_id: str,
     revised_targets_df: Any,
+    *,
+    show_all_forecast_models: bool = False,
 ) -> None:
     revised_targets = _as_dataframe(revised_targets_df)
     if not revised_targets.empty:
@@ -4197,17 +8927,45 @@ def _render_target_or_strategy_table(
         )
         return
 
-    strategy_table = build_strategy_level_table(scenario_df, selected_scenario_id)
-    st.subheader("운영전략별 목표 수준표")
-    st.caption(
-        "초과달성/유지 전략은 입력표 밖 날짜를 만들거나 잔여 일자 목표를 강제로 재배분하지 않습니다. "
-        "대신 선택한 예측모델의 운영전략별 월 목표, 초과 예상분, 안전버퍼, 품질관리 여유분을 표시합니다."
+    strategy_table = build_strategy_level_table(
+        scenario_df,
+        None if show_all_forecast_models else selected_scenario_id,
     )
+    if show_all_forecast_models:
+        strategy_effect_table = build_strategy_effect_table(scenario_df, selected_scenario_id)
+        if not strategy_effect_table.empty:
+            forecast_key = _selected_forecast_key(selected_scenario_id) or str(
+                strategy_effect_table["forecast_basis"].iloc[0]
+            )
+            st.subheader(f"{forecast_key} 고정 O전략 차이 요약")
+            st.caption(
+                f"{forecast_key} 예측값은 그대로 두고, O1/O2/O3가 운영 목표·버퍼·품질관리 여유를 어떻게 나누는지 비교합니다. "
+                "O전략은 월말 예상 실적을 새로 예측하지 않습니다."
+            )
+            st.dataframe(
+                _format_display_df(strategy_effect_table),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        st.subheader("F예측 × O전략 전체 매트릭스")
+        st.caption(
+            "세로로 반복되는 차이는 F1/F2/F3 예측 차이이고, 같은 F 안에서 O1/O2/O3를 비교할 때가 O전략 차이입니다. "
+            "각 O전략은 월말 예상 실적을 바꾸지 않고 Stretch 전환분, 운영전략 월 목표, 안전버퍼, 품질관리 여유분을 바꿉니다."
+        )
+    else:
+        forecast_key = _selected_forecast_key(selected_scenario_id) or "선택 모델"
+        st.subheader(f"{forecast_key} 기준 전략 목표·버퍼·리스크 수준표")
+        st.caption(
+            "같은 예측모델의 월말 예상 실적은 전략별로 바꾸지 않습니다. "
+            "이 표는 Stretch 전환분, 운영전략 월 목표, 안전버퍼, 품질관리 여유분처럼 실제로 달라지는 운영 기준을 먼저 비교합니다."
+        )
     if strategy_table.empty:
         st.info("운영전략별 목표 수준 데이터 없음")
         return
     st.dataframe(
         _format_display_df(strategy_table),
+        hide_index=True,
         use_container_width=True,
     )
 
@@ -4224,6 +8982,7 @@ def _render_visuals(
     as_of_date: object,
     df: pd.DataFrame,
     config: dict[str, Any],
+    audit_readonly: bool = False,
 ) -> None:
     st.subheader("시각화")
     st.caption("각 탭은 결론 확인 → 기준선 확인 → 차이 확인 → 실행 판단 순서로 읽습니다.")
@@ -4273,9 +9032,16 @@ def _render_visuals(
 
     with close_cycle_tab:
         close_cycle_bar_columns = ("target_sum", "actual_sum")
+        close_cycle_cumulative_amount_columns = ("target_cum", "actual_cum")
         close_cycle_rate_columns = ("achievement_rate",)
+        close_cycle_cumulative_rate_columns = ("cumulative_achievement_rate",)
         _render_visual_metric_definitions(
-            (*close_cycle_bar_columns, *close_cycle_rate_columns)
+            (
+                *close_cycle_bar_columns,
+                *close_cycle_cumulative_amount_columns,
+                *close_cycle_rate_columns,
+                *close_cycle_cumulative_rate_columns,
+            )
         )
         close_cycle_chart_data = build_close_cycle_chart_data(close_cycle_df)
         if close_cycle_chart_data.empty:
@@ -4283,11 +9049,21 @@ def _render_visuals(
         else:
             _render_chart_reading_guide("close_cycle_amount")
             _render_grouped_bar_chart(close_cycle_chart_data, close_cycle_bar_columns)
+            st.markdown("**CloseCycle 누적 목표선/누적 실적**")
+            st.caption("입력표에 있는 마감차수 row만 사용해 누적 목표선과 누적 실적을 함께 표시합니다.")
+            _render_line_chart(close_cycle_chart_data, close_cycle_cumulative_amount_columns)
             _render_chart_reading_guide("close_cycle_rate")
             _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
+            st.markdown("**누적 달성률**")
+            _render_rate_ratio_line_chart(close_cycle_chart_data, close_cycle_cumulative_rate_columns)
 
     with history_tab:
-        _render_forecast_history_backtest_tab(scenario_df, metric, as_of_date)
+        _render_forecast_history_backtest_tab(
+            scenario_df,
+            metric,
+            as_of_date,
+            audit_readonly=audit_readonly,
+        )
 
 
 def _render_visual_decision_panel(
@@ -4326,12 +9102,20 @@ def _render_forecast_history_backtest_tab(
     scenario_df: pd.DataFrame,
     metric: str,
     as_of_date: object,
+    audit_readonly: bool = False,
 ) -> None:
     st.subheader(HISTORY_TAB_LABEL)
+    _render_history_insight_header()
     st.caption("현재 계산 결과를 저장하고, 월마감 확정 실적과 매칭되는 이력은 Backtest로 비교합니다.")
+    if audit_readonly:
+        st.info("읽기 전용 감리 모드: 예측 이력 저장 버튼이 비활성화됩니다.")
 
     save_col, path_col = st.columns([1, 3])
-    if save_col.button("예측 이력 저장", key=f"save_forecast_history_{metric}_{pd.Timestamp(as_of_date).date()}"):
+    if save_col.button(
+        "예측 이력 저장",
+        key=f"save_forecast_history_{metric}_{pd.Timestamp(as_of_date).date()}",
+        disabled=audit_readonly,
+    ):
         try:
             saved_history = save_forecast_history_snapshot(scenario_df, as_of_date, metric)
             st.success(f"예측 이력을 저장했습니다. forecast_history {len(saved_history)}건")
@@ -4352,22 +9136,42 @@ def _render_forecast_history_backtest_tab(
         as_of_date,
     )
 
-    st.markdown("**forecast_history 테이블**")
+    if forecast_history.empty and final_actuals.empty:
+        st.info("완료월 데이터가 쌓이면 예측 이력과 모델 신뢰도 비교가 표시됩니다.")
+        st.caption("월마감 후 실제 실적을 저장하면 다음 달부터 비교 기준으로 사용할 수 있습니다.")
+
+    st.markdown("**완료월 비교**")
+    st.caption("저장된 예측값과 월마감 후 확정 실적이 같은 대상 월/지표로 연결되는지 확인합니다.")
     if forecast_history.empty:
         st.info("forecast_history 파일이 없거나 저장된 예측 이력이 없습니다. 예측 이력 저장 후 이 표에 누적됩니다.")
     else:
+        st.markdown("forecast_history 테이블")
         st.dataframe(
             _format_display_df(forecast_history.tail(200)),
             hide_index=True,
             use_container_width=True,
         )
 
-    st.markdown("**final_actuals 테이블**")
     if final_actuals.empty:
         st.info("final_actuals가 아직 없습니다. 월마감 확정 실적이 저장되면 Backtest 오차율을 계산합니다.")
     else:
+        st.markdown("final_actuals 테이블")
         st.dataframe(
             _format_display_df(final_actuals.tail(200)),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.markdown("**같은 영업일차 Benchmark**")
+    if focused_history.empty:
+        st.info("현재 기준월/지표와 같은 조건의 예측 이력이 아직 없어 같은 영업일차 Benchmark를 표시할 수 없습니다.")
+    else:
+        benchmark_columns = _available_columns(
+            focused_history,
+            ("target_month", "as_of_date", "metric", "forecast_model", "forecast_amount", "target_status"),
+        )
+        st.dataframe(
+            _format_display_df(focused_history.loc[:, benchmark_columns].tail(80)),
             hide_index=True,
             use_container_width=True,
         )
@@ -4375,7 +9179,7 @@ def _render_forecast_history_backtest_tab(
     backtest_df = build_backtest_dataset(forecast_history, final_actuals)
     model_summary = summarize_by_forecast_model(backtest_df)
 
-    st.markdown("**모델별 평균 오차율 / bias**")
+    st.markdown("**Backtest Summary**")
     if model_summary.empty:
         st.info("예측 이력과 확정 실적의 대상 월/지표가 아직 매칭되지 않아 모델별 평균 오차율과 bias를 표시할 수 없습니다.")
     else:
@@ -4391,9 +9195,17 @@ def _render_forecast_history_backtest_tab(
     _render_optional_weighted_forecast(focused_history)
     _render_optional_confidence_band(focused_history)
 
-    st.markdown("**Insight**")
+    st.markdown("**Insights**")
     for message in build_backtest_insights(forecast_history, final_actuals, model_summary):
         st.write(f"- {message}")
+    st.markdown(
+        '<div class="history-next-actions">'
+        "<span>완료월 실제 실적 저장</span>"
+        "<span>현재 예측과 과거 같은 영업일차 비교</span>"
+        "<span>보고 메모에 신뢰도 코멘트 반영</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _load_history_tables_for_ui() -> dict[str, pd.DataFrame]:
@@ -4527,7 +9339,7 @@ def _render_gap_surplus_trend_chart(forecast_history: pd.DataFrame) -> None:
 
 
 def _render_optional_weighted_forecast(forecast_history: pd.DataFrame) -> None:
-    st.markdown("**Weighted Forecast**")
+    st.markdown("**ModelWeights**")
     weighted_columns = _optional_columns_by_token(
         forecast_history,
         WEIGHTED_FORECAST_COLUMN_TOKENS,
@@ -4551,7 +9363,7 @@ def _render_optional_weighted_forecast(forecast_history: pd.DataFrame) -> None:
 
 
 def _render_optional_confidence_band(forecast_history: pd.DataFrame) -> None:
-    st.markdown("**Confidence Band**")
+    st.markdown("**ConfidenceBand**")
     band_pair = _confidence_band_pair(forecast_history)
     if band_pair is None:
         st.caption("Confidence Band 데이터가 아직 없습니다.")
@@ -4820,12 +9632,24 @@ def _render_strategy_level_visuals(
         return
 
     _render_visual_metric_definitions(
-        ("monthly_target", "forecast_after_provision", "target_variance")
+        (
+            "stretch_uplift",
+            "revised_monthly_target",
+            "remaining_surplus_buffer",
+            "relief_amount",
+        )
     )
     _render_chart_reading_guide("scenario_target_position")
-    _render_scenario_target_position_chart(strategy_table, selected_scenario_id)
+    strategy_compare_source = build_strategy_arrival_compare_source(
+        strategy_table,
+        selected_scenario_id,
+    )
+    if bool(strategy_compare_source.attrs.get("fallback_used")):
+        _render_strategy_compare_fallback(strategy_compare_source)
+    else:
+        _render_scenario_target_position_chart(strategy_table, selected_scenario_id)
 
-    st.dataframe(_format_display_df(strategy_table), use_container_width=True)
+    st.dataframe(_format_display_df(strategy_table), hide_index=True, use_container_width=True)
 
 
 def _render_forecast_model_scenario_tabs(
@@ -5877,6 +10701,55 @@ def _render_line_chart(
     st.altair_chart(chart, use_container_width=True)
 
 
+def _render_rate_ratio_line_chart(
+    chart_data: pd.DataFrame,
+    metric_columns: tuple[str, ...],
+) -> None:
+    source = build_grouped_bar_chart_source(chart_data, metric_columns)
+    if source.empty:
+        st.info("누적 달성률 차트 데이터 없음")
+        return
+
+    label_order = [
+        _chart_labels(metric_columns)[column]
+        for column in metric_columns
+        if column in set(source["metric"])
+    ]
+    chart = (
+        alt.Chart(source)
+        .mark_line(point=True, strokeWidth=2.6, color="#14756f")
+        .encode(
+            x=alt.X(
+                "category:N",
+                title=None,
+                sort=None,
+                axis=alt.Axis(labelAngle=-30, labelLimit=120),
+            ),
+            y=alt.Y(
+                "value:Q",
+                title="누적 달성률",
+                scale=_auto_value_scale(source),
+                axis=alt.Axis(format=".0%"),
+            ),
+            color=alt.Color(
+                "범례:N",
+                title="범례",
+                sort=label_order,
+                scale=alt.Scale(range=["#14756f"]),
+            ),
+            tooltip=[
+                alt.Tooltip("category:N", title="항목"),
+                alt.Tooltip("범례:N", title="수치"),
+                alt.Tooltip("value:Q", title="누적 달성률", format=".1%"),
+            ],
+        )
+        .properties(height=280)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
 def _auto_value_scale(source: pd.DataFrame) -> alt.Scale:
     axis_domain = build_auto_axis_domain(source["value"])
     if axis_domain is None:
@@ -6127,6 +11000,14 @@ def _as_dataframe(value: Any) -> pd.DataFrame:
     if value is None:
         return pd.DataFrame()
     return pd.DataFrame(value)
+
+
+def _as_series(value: Any) -> pd.Series:
+    if isinstance(value, pd.Series):
+        return value
+    if isinstance(value, Mapping):
+        return pd.Series(dict(value))
+    return pd.Series(dtype=object)
 
 
 def _as_float(value: object) -> float:
