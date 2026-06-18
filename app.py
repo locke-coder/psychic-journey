@@ -1425,7 +1425,7 @@ def default_as_of_date(
     metric: str,
     today: object | None = None,
 ) -> pd.Timestamp:
-    """Return the latest input business date before today."""
+    """Return the previous input business date before today."""
     _ = metric
     dates = pd.to_datetime(df["date"], errors="raise").dt.normalize()
     current_date = _current_app_date(today)
@@ -3956,6 +3956,7 @@ def _render_settings(
         index=default_index,
         key=f"as_of_date_{metric}_{default_date.isoformat()}",
     )
+    st.caption("기본 기준일은 입력표 date 컬럼에서 오늘보다 앞선 마지막 입력일입니다. 선택한 지표의 누적 실적은 해당 기준일까지 입력되어 있어야 계산됩니다.")
     forecast_choice = st.selectbox(
         "예측모델 선택",
         ["F1", "F2", "F3", COMPARE_LABEL],
