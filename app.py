@@ -147,6 +147,7 @@ CURRENT_INPUT_DF_SESSION_KEY = "pace_current_input_df"
 CURRENT_INPUT_SOURCE_SESSION_KEY = "pace_current_input_source"
 HISTORICAL_INPUT_DF_SESSION_KEY = "pace_historical_input_df"
 HISTORICAL_INPUT_SOURCE_SESSION_KEY = "pace_historical_input_source"
+HISTORICAL_SAMPLE_DISABLED_SESSION_KEY = "pace_historical_sample_disabled"
 PACE_METRIC_SESSION_KEY = "pace_metric"
 PACE_AS_OF_DATE_SESSION_KEY = "pace_as_of_date"
 PACE_AS_OF_DATE_DEFAULT_SESSION_KEY = "pace_as_of_date_default_token"
@@ -1162,9 +1163,21 @@ def _store_current_input_state(df: pd.DataFrame, source_label: str) -> None:
 def _get_historical_input_state() -> tuple[pd.DataFrame, str]:
     stored_df = st.session_state.get(HISTORICAL_INPUT_DF_SESSION_KEY)
     stored_source = st.session_state.get(HISTORICAL_INPUT_SOURCE_SESSION_KEY)
-    if isinstance(stored_df, pd.DataFrame):
+    sample_disabled = bool(st.session_state.get(HISTORICAL_SAMPLE_DISABLED_SESSION_KEY, False))
+    if isinstance(stored_df, pd.DataFrame) and (not stored_df.empty or stored_source or sample_disabled):
         return stored_df.copy(), str(stored_source or "")
-    return pd.DataFrame(), ""
+    if sample_disabled:
+        return pd.DataFrame(), ""
+    try:
+        historical_df = load_input(
+            HISTORICAL_SAMPLE_INPUT_PATH,
+            sort_by="date",
+            strict_business_day_no=False,
+        )
+    except Exception:  # noqa: BLE001 - keep the page usable if the bundled sample is missing.
+        return pd.DataFrame(), ""
+    _store_historical_input_state(historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL)
+    return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
 
 
 def _store_historical_input_state(df: pd.DataFrame, source_label: str) -> None:
@@ -2398,8 +2411,8 @@ def _render_strategy_reference_sections(
     """Render visible strategy cards for under, over, and neutral states."""
     st.markdown(
         render_section_header(
-            "전략 카드 전체 보기",
-            "현재 상태와 무관하게 P1/P2/P3, O1/O2/O3, ON_TARGET / Neutral 전략을 참고용으로 함께 표시합니다.",
+            "전략 카드",
+            "현재 관리 대상 전략을 먼저 보고, 다른 상태 전략은 참고용으로 접어 둡니다.",
         ),
         unsafe_allow_html=True,
     )
@@ -2444,7 +2457,8 @@ def _render_strategy_reference_sections(
             },
         },
     )
-    for section in sections:
+
+    def render_strategy_section(section: Mapping[str, object]) -> None:
         is_active = str(target_status) == section["status"]
         section_class = " is-active-management" if is_active else ""
         state_label = "현재 관리 대상" if is_active else "현재 상태에서는 참고용"
@@ -2467,6 +2481,20 @@ def _render_strategy_reference_sections(
             "</section>",
             unsafe_allow_html=True,
         )
+
+    active_sections = [
+        section for section in sections if str(target_status) == str(section["status"])
+    ]
+    reference_sections = [
+        section for section in sections if str(target_status) != str(section["status"])
+    ]
+    for section in active_sections or sections[:1]:
+        render_strategy_section(section)
+
+    if reference_sections:
+        with st.expander("다른 상태 전략 참고", expanded=False):
+            for section in reference_sections:
+                render_strategy_section(section)
 
 
 def _render_strategy_arrival_inline_summary(
@@ -3200,6 +3228,11 @@ def _render_forecast_detail_page(context: Mapping[str, Any]) -> None:
     model_rows_df = pd.DataFrame(model_rows)
     st.dataframe(_format_display_df(model_rows_df), hide_index=True, use_container_width=True)
     _render_forecast_model_mini_chart(model_rows_df, selected_row, validation_result)
+    _render_historical_context_panel(
+        dict(context.get("historical_context") or {}),
+        scenario_df,
+        str(context.get("selected_scenario_id") or selected_row.get("scenario_id") or ""),
+    )
 
     st.markdown(
         render_section_header("CloseCycle / Daily revised target", "마감차수 흐름과 잔여 목표 보정 상세입니다."),
@@ -3233,7 +3266,7 @@ def _render_scenarios_detail_page(context: Mapping[str, Any]) -> None:
     )
     st.session_state[PACE_SELECTED_SCENARIO_SESSION_KEY] = selected_scenario_id
     selected_row = _selected_scenario_row(scenario_df, selected_scenario_id)
-    forecast_result, provision_result = run_selected_scenario_detail(
+    _forecast_result, provision_result = run_selected_scenario_detail(
         _as_dataframe(context["df"]),
         context["as_of_date"],
         str(context["metric"]),
@@ -3248,26 +3281,18 @@ def _render_scenarios_detail_page(context: Mapping[str, Any]) -> None:
         selected_scenario_id,
         selected_row.get("target_status"),
     )
-    _render_strategy_arrival_compact_chart(scenario_df, selected_scenario_id)
-    render_next_action_panel("scenarios", context)
-    st.markdown("**ScenarioGrid 전체**")
-    st.dataframe(_format_display_df(scenario_df), use_container_width=True)
-    _render_visuals(
+    _render_historical_context_panel(
+        dict(context.get("historical_context") or {}),
         scenario_df,
         selected_scenario_id,
-        selected_row,
-        revised_targets_df,
-        _as_dataframe(context["close_cycle_df"]),
-        dict(context["next_close_result"]),
-        dict(context["validation_result"]),
-        str(context["metric"]),
-        context["as_of_date"],
-        _as_dataframe(context["df"]),
-        dict(context["config"]),
-        audit_readonly=bool(context.get("audit_readonly", False)),
     )
-    _render_selected_scenario_summary(selected_scenario_id, selected_row)
-    _render_target_or_strategy_table(scenario_df, selected_scenario_id, revised_targets_df)
+    with st.expander("선택 전략 상세표", expanded=False):
+        _render_target_or_strategy_table(scenario_df, selected_scenario_id, revised_targets_df)
+    with st.expander("선택 시나리오 상세값", expanded=False):
+        _render_selected_scenario_summary(selected_scenario_id, selected_row)
+    with st.expander("ScenarioGrid 전체 원본", expanded=False):
+        st.dataframe(_format_display_df(scenario_df), use_container_width=True)
+    render_next_action_panel("scenarios", context)
 
 
 def _render_report_detail_page(context: Mapping[str, Any]) -> None:
@@ -6121,6 +6146,207 @@ def build_scenario_value_matrix(
     return matrix
 
 
+def build_historical_forecast_comparison(
+    scenario_df: pd.DataFrame,
+    historical_context: Mapping[str, object],
+    selected_scenario_id: str = "",
+) -> pd.DataFrame:
+    """Return current forecasts and historical-performance forecasts in one comparison table."""
+    scenarios = _as_dataframe(scenario_df)
+    benchmark = dict(historical_context.get("benchmark") or {})
+    if scenarios.empty or not benchmark:
+        return pd.DataFrame(
+            columns=[
+                "comparison_group",
+                "basis",
+                "forecast_amount",
+                "monthly_target",
+                "forecast_rate",
+                "diff_vs_target",
+                "diff_vs_historical_median",
+            ]
+        )
+
+    monthly_target = _as_float(benchmark.get("current_monthly_target"))
+    if not math.isfinite(monthly_target) and "monthly_target" in scenarios.columns:
+        target_values = pd.to_numeric(scenarios["monthly_target"], errors="coerce").dropna()
+        if not target_values.empty:
+            monthly_target = _as_float(target_values.iloc[0])
+    historical_median = _as_float(benchmark.get("historical_forecast_median"))
+
+    rows: list[dict[str, object]] = []
+
+    def append_row(group: str, basis: str, amount: object) -> None:
+        value = _as_float(amount)
+        if not math.isfinite(value):
+            return
+        rows.append(
+            {
+                "comparison_group": group,
+                "basis": basis,
+                "forecast_amount": value,
+                "monthly_target": monthly_target,
+                "forecast_rate": safe_divide(value, monthly_target),
+                "diff_vs_target": (
+                    value - monthly_target if math.isfinite(monthly_target) else float("nan")
+                ),
+                "diff_vs_historical_median": (
+                    value - historical_median
+                    if math.isfinite(historical_median)
+                    else float("nan")
+                ),
+            }
+        )
+
+    if selected_scenario_id and "scenario_id" in scenarios.columns:
+        selected_row = _selected_scenario_row(scenarios, selected_scenario_id)
+        append_row(
+            "현재 예측",
+            f"선택 시나리오 {selected_scenario_id}",
+            selected_row.get("forecast_after_provision", selected_row.get("forecast_amount")),
+        )
+
+    forecast_summary = _forecast_summary(scenarios)
+    for forecast_key in ("F1", "F2", "F3"):
+        definition = FORECAST_MODEL_DEFINITIONS.get(forecast_key, {})
+        append_row(
+            "F모델 기본 예측",
+            f"{forecast_key} {definition.get('name', forecast_key)}",
+            forecast_summary.get(forecast_key),
+        )
+
+    for key, label in (
+        ("historical_forecast_lower", "과거 하위 25%"),
+        ("historical_forecast_median", "과거 중앙값"),
+        ("historical_forecast_upper", "과거 상위 25%"),
+    ):
+        append_row("과거 실적 기반", label, benchmark.get(key))
+
+    return pd.DataFrame(rows)
+
+
+def build_historical_forecast_decision_summary(comparison_df: pd.DataFrame) -> dict[str, object]:
+    """Condense historical comparison rows into one report-ready decision summary."""
+    source = _as_dataframe(comparison_df)
+    if source.empty:
+        return {"has_data": False}
+
+    def first_amount(mask: pd.Series, column: str = "forecast_amount") -> float:
+        rows = source.loc[mask]
+        if rows.empty or column not in rows.columns:
+            return float("nan")
+        return _as_float(rows.iloc[0].get(column))
+
+    if "basis" not in source.columns:
+        return {"has_data": False}
+
+    selected_amount = first_amount(source["basis"].astype(str).str.startswith("선택 시나리오"))
+    historical_lower = first_amount(source["basis"] == "과거 하위 25%")
+    historical_median = first_amount(source["basis"] == "과거 중앙값")
+    historical_upper = first_amount(source["basis"] == "과거 상위 25%")
+    monthly_target_values = (
+        pd.to_numeric(source["monthly_target"], errors="coerce").dropna()
+        if "monthly_target" in source.columns
+        else pd.Series(dtype="float64")
+    )
+    monthly_target = (
+        _as_float(monthly_target_values.iloc[0])
+        if not monthly_target_values.empty
+        else float("nan")
+    )
+    reference_amount = selected_amount if math.isfinite(selected_amount) else historical_median
+    target_delta = (
+        reference_amount - monthly_target
+        if math.isfinite(reference_amount) and math.isfinite(monthly_target)
+        else float("nan")
+    )
+    history_delta = (
+        selected_amount - historical_median
+        if math.isfinite(selected_amount) and math.isfinite(historical_median)
+        else float("nan")
+    )
+    threshold = 0.5
+    if math.isfinite(monthly_target):
+        threshold = max(threshold, abs(monthly_target) * 0.005)
+
+    if math.isfinite(selected_amount) and math.isfinite(historical_median):
+        report_low = min(selected_amount, historical_median)
+        report_high = max(selected_amount, historical_median)
+        report_basis = "선택 예측과 과거 중앙값 사이"
+    elif math.isfinite(historical_lower) and math.isfinite(historical_upper):
+        report_low = historical_lower
+        report_high = historical_upper
+        report_basis = "과거 하위 25%~상위 25% 범위"
+    elif math.isfinite(reference_amount):
+        report_low = reference_amount
+        report_high = reference_amount
+        report_basis = "사용 가능한 단일 예측값"
+    else:
+        return {"has_data": False}
+
+    report_range = (
+        format_amount(report_low)
+        if math.isclose(report_low, report_high, rel_tol=1e-9, abs_tol=1e-9)
+        else f"{format_amount(report_low)} ~ {format_amount(report_high)}"
+    )
+
+    if math.isfinite(history_delta) and history_delta > threshold:
+        forecast_position = (
+            f"선택 예측이 과거 중앙값보다 {format_amount(history_delta)} 높아 공격적인 전망입니다."
+        )
+    elif math.isfinite(history_delta) and history_delta < -threshold:
+        forecast_position = (
+            f"선택 예측이 과거 중앙값보다 {format_amount(abs(history_delta))} 낮아 보수적인 전망입니다."
+        )
+    elif math.isfinite(history_delta):
+        forecast_position = "선택 예측이 과거 중앙값과 유사해 기준 전망으로 쓰기 좋은 구간입니다."
+    else:
+        forecast_position = "과거 기준 범위만으로 전망을 읽는 상태입니다."
+
+    if math.isfinite(target_delta) and target_delta > threshold:
+        target_position = f"목표보다 {format_amount(target_delta)} 높은 초과 예상입니다."
+        action = "초과분은 안전버퍼와 Stretch 전환분으로 나누고, 실적 인정 가능성을 함께 점검합니다."
+    elif math.isfinite(target_delta) and target_delta < -threshold:
+        target_position = f"목표보다 {format_amount(abs(target_delta))} 낮은 미달 리스크입니다."
+        action = "잔여 목표 보정과 다음 마감 누적선 회복을 우선 검토합니다."
+    elif math.isfinite(target_delta):
+        target_position = "목표에 근접한 구간입니다."
+        action = "현재 페이스를 유지하면서 취소, 철회, 실적인정 리스크를 모니터링합니다."
+    else:
+        target_position = "목표 대비 차이를 계산할 수 없습니다."
+        action = "월 목표와 과거 비교 데이터 입력 상태를 먼저 확인합니다."
+
+    return {
+        "has_data": True,
+        "headline": f"기준 보고 범위는 {report_range}입니다.",
+        "report_range": report_range,
+        "report_basis": report_basis,
+        "forecast_position": forecast_position,
+        "target_position": target_position,
+        "action": action,
+        "reference_amount": reference_amount,
+        "monthly_target": monthly_target,
+        "history_delta": history_delta,
+        "target_delta": target_delta,
+    }
+
+
+def build_historical_forecast_axis_domain(comparison_df: pd.DataFrame) -> list[float] | None:
+    """Return a zoomed x-axis domain for the historical forecast comparison chart."""
+    source = _as_dataframe(comparison_df)
+    if source.empty:
+        return None
+
+    values: list[pd.Series] = []
+    for column in ("forecast_amount", "monthly_target"):
+        if column in source.columns:
+            values.append(pd.to_numeric(source[column], errors="coerce"))
+    if not values:
+        return None
+
+    return build_auto_axis_domain(pd.concat(values, ignore_index=True))
+
+
 def _ordered_strategy_keys(scenario_df: pd.DataFrame) -> list[str]:
     default_order = ["P1", "P2", "P3", "O1", "O2", "O3", "N1", "N2", "N3"]
     suffixes: set[str] = set()
@@ -8292,9 +8518,10 @@ def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
 
 def _render_historical_upload() -> tuple[pd.DataFrame, str]:
     st.header("1-1. 과거 월 누적 데이터")
-    with st.expander("과거 월 데이터 업로드(선택)", expanded=False):
+    with st.expander("과거 월 데이터 업로드", expanded=False):
         st.caption(
-            "현재 입력 파일과 같은 컬럼 구조의 CSV/XLSX를 여러 월 누적 형태로 업로드합니다. "
+            "과거 샘플 데이터는 기본으로 비교 계산에 반영합니다. "
+            "별도 CSV/XLSX를 업로드하면 업로드 파일을 우선 사용합니다. "
             "과거 월 파일은 비교 계산에만 사용하고 최신 기본값 저장 대상에서는 제외합니다."
         )
         _render_historical_input_template_download()
@@ -8304,15 +8531,18 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
             key="historical_month_upload",
         )
         sample_col, clear_col = st.columns(2)
-        if sample_col.button("과거 샘플 데이터 로딩", key="load_historical_sample"):
+        if sample_col.button("기본 샘플 다시 적용", key="load_historical_sample"):
             st.session_state["use_historical_sample_input"] = True
+            st.session_state[HISTORICAL_SAMPLE_DISABLED_SESSION_KEY] = False
         if clear_col.button("과거 데이터 비우기", key="clear_historical_sample"):
             st.session_state["use_historical_sample_input"] = False
+            st.session_state[HISTORICAL_SAMPLE_DISABLED_SESSION_KEY] = True
             return pd.DataFrame(), ""
 
         try:
             if uploaded_file is not None:
                 st.session_state["use_historical_sample_input"] = False
+                st.session_state[HISTORICAL_SAMPLE_DISABLED_SESSION_KEY] = False
                 historical_df = _load_uploaded_input(
                     uploaded_file,
                     sort_by="date",
@@ -8321,19 +8551,19 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
                 st.success(f"과거 월 데이터 {len(historical_df)}행을 불러왔습니다.")
                 return historical_df, uploaded_file.name
 
-            if st.session_state.get("use_historical_sample_input", False):
+            if not st.session_state.get(HISTORICAL_SAMPLE_DISABLED_SESSION_KEY, False):
                 historical_df = load_input(
                     HISTORICAL_SAMPLE_INPUT_PATH,
                     sort_by="date",
                     strict_business_day_no=False,
                 )
-                st.success(f"과거 샘플 데이터 {len(historical_df)}행을 불러왔습니다.")
+                st.info(f"과거 샘플 데이터 {len(historical_df)}행을 기본 반영 중입니다.")
                 return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
         except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
             st.error(f"과거 월 데이터를 로딩할 수 없습니다: {exc}")
             return pd.DataFrame(), ""
 
-        st.info("과거 월 데이터를 업로드하면 현재 월을 같은 영업일차의 과거 흐름과 비교합니다.")
+        st.info("과거 데이터를 비운 상태입니다. 기본 샘플 다시 적용을 누르면 비교값이 다시 표시됩니다.")
     return pd.DataFrame(), ""
 
 
@@ -8845,7 +9075,11 @@ def _render_body(
         df,
         config,
     )
-    _render_historical_context_panel(historical_context)
+    _render_historical_context_panel(
+        historical_context,
+        scenario_df,
+        selected_scenario_id,
+    )
 
     st.subheader("시나리오 매트릭스")
     st.dataframe(build_scenario_matrix(scenario_df), use_container_width=True)
@@ -9453,16 +9687,64 @@ def _available_columns(
     return [column for column in preferred_columns if column in df.columns]
 
 
-def _render_historical_context_panel(historical_context: dict[str, object]) -> None:
+def _render_historical_context_panel(
+    historical_context: dict[str, object],
+    scenario_df: pd.DataFrame | None = None,
+    selected_scenario_id: str = "",
+) -> None:
+    st.subheader("과거 실적 기반 예측 비교")
     if not historical_context.get("has_data"):
+        st.info("과거 월 데이터가 없어 과거 실적 기반 예측값을 계산할 수 없습니다.")
         return
+
+    comparison_df = build_historical_forecast_comparison(
+        _as_dataframe(scenario_df),
+        historical_context,
+        selected_scenario_id,
+    )
+    if comparison_df.empty:
+        st.info("같은 영업일차의 과거 월말 전환 데이터가 부족해 비교값을 만들 수 없습니다.")
+    else:
+        decision_summary = build_historical_forecast_decision_summary(comparison_df)
+        _render_historical_forecast_decision_card(decision_summary)
+        selected_rows = comparison_df.loc[
+            comparison_df["basis"].astype(str).str.startswith("선택 시나리오")
+        ]
+        historical_rows = comparison_df.loc[comparison_df["basis"] == "과거 중앙값"]
+        selected_amount = (
+            selected_rows.iloc[0]["forecast_amount"] if not selected_rows.empty else float("nan")
+        )
+        historical_median = (
+            historical_rows.iloc[0]["forecast_amount"] if not historical_rows.empty else float("nan")
+        )
+        diff_vs_historical = (
+            selected_amount - historical_median
+            if math.isfinite(_as_float(selected_amount)) and math.isfinite(_as_float(historical_median))
+            else float("nan")
+        )
+        diff_vs_target = (
+            selected_rows.iloc[0]["diff_vs_target"] if not selected_rows.empty else float("nan")
+        )
+
+        cols = st.columns(4)
+        cols[0].metric("선택 예측", format_amount(selected_amount))
+        cols[1].metric("과거 중앙값 예측", format_amount(historical_median))
+        cols[2].metric("과거 중앙값 대비", format_amount(diff_vs_historical))
+        cols[3].metric("목표 대비", format_amount(diff_vs_target))
+
+        _render_historical_forecast_comparison_chart(comparison_df)
+        st.dataframe(
+            _format_historical_forecast_comparison_df(comparison_df),
+            hide_index=True,
+            use_container_width=True,
+        )
 
     benchmark = dict(historical_context.get("benchmark") or {})
     source_label = str(historical_context.get("source_label") or "과거 월 데이터")
     row_count = int(historical_context.get("row_count") or 0)
     month_count = int(benchmark.get("month_count") or 0)
 
-    st.subheader("과거 월 누적 기준 해석")
+    st.markdown("**과거 월 누적 기준 해석**")
     st.caption(
         f"과거 데이터: {source_label} | {row_count}행 | 같은 영업일차 비교 가능 월 {month_count}개"
     )
@@ -9504,7 +9786,161 @@ def _render_historical_context_panel(historical_context: dict[str, object]) -> N
                 _format_historical_monthly_summary_df(monthly_summary),
                 hide_index=True,
                 use_container_width=True,
+        )
+
+
+def _render_historical_forecast_decision_card(summary: Mapping[str, object]) -> None:
+    if not summary.get("has_data"):
+        return
+
+    rows = (
+        ("기준 보고 범위", str(summary.get("headline") or "")),
+        ("예측 성격", str(summary.get("forecast_position") or "")),
+        ("목표 판단", str(summary.get("target_position") or "")),
+        ("운영 액션", str(summary.get("action") or "")),
+    )
+    row_html = "".join(
+        '<span>'
+        f"<strong>{escape(label)}</strong><br>"
+        f"{escape(value)}"
+        "</span>"
+        for label, value in rows
+        if value
+    )
+    st.markdown(
+        '<section class="history-purpose-card">'
+        "<h3>최종 판단 요약</h3>"
+        f'<div class="history-question-grid">{row_html}</div>'
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_historical_forecast_comparison_chart(comparison_df: pd.DataFrame) -> None:
+    source = _as_dataframe(comparison_df)
+    if source.empty:
+        return
+
+    source = source.copy()
+    source["sort_order"] = range(len(source))
+    source["forecast_amount"] = pd.to_numeric(source["forecast_amount"], errors="coerce")
+    source = source.dropna(subset=["forecast_amount"])
+    if source.empty:
+        return
+    axis_domain = build_historical_forecast_axis_domain(source)
+    x_scale = (
+        alt.Scale(domain=axis_domain, zero=False, nice=True)
+        if axis_domain is not None
+        else alt.Scale(zero=False, nice=True)
+    )
+    axis_floor = (
+        axis_domain[0]
+        if axis_domain is not None
+        else float(source["forecast_amount"].min())
+    )
+    source["axis_floor"] = axis_floor
+    st.caption("차이가 보이는 구간만 확대해서 표시합니다. 0 기준 전체 막대가 아니라 월말 예상값 주변 비교용 축입니다.")
+
+    bar = (
+        alt.Chart(source)
+        .mark_bar(cornerRadiusEnd=3)
+        .encode(
+            y=alt.Y("basis:N", title=None, sort=list(source["basis"])),
+            x=alt.X(
+                "axis_floor:Q",
+                title="월말 예상 실적",
+                axis=alt.Axis(format=chart_value_format("억원")),
+                scale=x_scale,
+            ),
+            x2=alt.X2("forecast_amount:Q"),
+            color=alt.Color(
+                "comparison_group:N",
+                title="구분",
+                scale=alt.Scale(
+                    domain=["현재 예측", "F모델 기본 예측", "과거 실적 기반"],
+                    range=["#DC2626", "#2563EB", "#059669"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("comparison_group:N", title="구분"),
+                alt.Tooltip("basis:N", title="기준"),
+                alt.Tooltip("forecast_amount:Q", title="예측값", format=chart_value_format("억원")),
+                alt.Tooltip("diff_vs_target:Q", title="목표 대비", format=chart_value_format("억원")),
+                alt.Tooltip(
+                    "diff_vs_historical_median:Q",
+                    title="과거 중앙값 대비",
+                    format=chart_value_format("억원"),
+                ),
+            ],
+        )
+        .properties(height=max(260, min(420, len(source) * 42)))
+    )
+
+    rules: list[alt.Chart] = []
+    monthly_target_values = pd.to_numeric(source["monthly_target"], errors="coerce").dropna()
+    monthly_target = (
+        _as_float(monthly_target_values.iloc[0])
+        if not monthly_target_values.empty
+        else float("nan")
+    )
+    if math.isfinite(monthly_target):
+        rules.append(
+            alt.Chart(pd.DataFrame({"value": [monthly_target], "label": ["월 목표"]}))
+            .mark_rule(strokeDash=[6, 4], color="#111827")
+            .encode(x="value:Q", tooltip=[alt.Tooltip("value:Q", title="월 목표", format=chart_value_format("억원"))])
+        )
+
+    historical_median_rows = source.loc[source["basis"] == "과거 중앙값"]
+    if not historical_median_rows.empty:
+        historical_median = _as_float(historical_median_rows.iloc[0]["forecast_amount"])
+        if math.isfinite(historical_median):
+            rules.append(
+                alt.Chart(pd.DataFrame({"value": [historical_median], "label": ["과거 중앙값"]}))
+                .mark_rule(strokeDash=[3, 3], color="#059669")
+                .encode(
+                    x="value:Q",
+                    tooltip=[
+                        alt.Tooltip(
+                            "value:Q",
+                            title="과거 중앙값",
+                            format=chart_value_format("억원"),
+                        )
+                    ],
+                )
             )
+
+    chart = bar
+    for rule in rules:
+        chart = chart + rule
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _format_historical_forecast_comparison_df(comparison_df: pd.DataFrame) -> pd.DataFrame:
+    result = comparison_df.copy()
+    columns = [
+        "comparison_group",
+        "basis",
+        "forecast_amount",
+        "forecast_rate",
+        "diff_vs_target",
+        "diff_vs_historical_median",
+    ]
+    result = result.loc[:, [column for column in columns if column in result.columns]]
+    for column in ("forecast_amount", "diff_vs_target", "diff_vs_historical_median"):
+        if column in result.columns:
+            result[column] = result[column].map(format_amount)
+    if "forecast_rate" in result.columns:
+        result["forecast_rate"] = result["forecast_rate"].map(format_rate)
+    return result.rename(
+        columns={
+            "comparison_group": "구분",
+            "basis": "비교 기준",
+            "forecast_amount": "월말 예상 실적",
+            "forecast_rate": "월 목표 대비",
+            "diff_vs_target": "목표 대비",
+            "diff_vs_historical_median": "과거 중앙값 대비",
+        }
+    )
 
 
 def _render_historical_progress_chart(chart_data: pd.DataFrame) -> None:
