@@ -34,6 +34,13 @@ from src.forecast_models import (
     run_forecast_model,
 )
 from src.loader import load_input
+from src.operator_sample_store import (
+    get_operator_sample_path,
+    get_packaged_sample_path,
+    load_sample_with_source,
+    read_operator_metadata,
+    save_operator_sample,
+)
 from src.history_store import append_forecast_history, build_forecast_history_rows
 from src.next_close import calculate_next_close_required
 from src.overachievement_models import (
@@ -108,6 +115,9 @@ INPUT_TEMPLATE_FILENAME = "month_close_forecast_input_template.xlsx"
 HISTORICAL_INPUT_TEMPLATE_FILENAME = "historical_month_close_forecast_input_template.xlsx"
 SAMPLE_INPUT_SOURCE_LABEL = "샘플 데이터"
 HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL = "과거 샘플 데이터"
+OPERATOR_SAMPLE_SOURCE_LABEL = "운영 저장본"
+PACKAGED_SAMPLE_DISPLAY_LABEL = "내장 샘플"
+UPLOAD_SAMPLE_DISPLAY_LABEL = "업로드 파일"
 INPUT_TEMPLATE_HEADERS = (
     "date",
     "day_name",
@@ -148,6 +158,7 @@ CURRENT_INPUT_SOURCE_SESSION_KEY = "pace_current_input_source"
 HISTORICAL_INPUT_DF_SESSION_KEY = "pace_historical_input_df"
 HISTORICAL_INPUT_SOURCE_SESSION_KEY = "pace_historical_input_source"
 HISTORICAL_SAMPLE_DISABLED_SESSION_KEY = "pace_historical_sample_disabled"
+OPERATOR_SAMPLE_NOTICE_SESSION_KEY = "pace_operator_sample_notice"
 PACE_METRIC_SESSION_KEY = "pace_metric"
 PACE_AS_OF_DATE_SESSION_KEY = "pace_as_of_date"
 PACE_AS_OF_DATE_DEFAULT_SESSION_KEY = "pace_as_of_date_default_token"
@@ -1148,11 +1159,17 @@ def _get_current_input_state() -> tuple[pd.DataFrame, str]:
     if isinstance(stored_df, pd.DataFrame):
         return stored_df.copy(), str(stored_source or SAMPLE_INPUT_SOURCE_LABEL)
 
-    df = load_input(SAMPLE_INPUT_PATH)
-    saved_actuals = _load_saved_actuals_for_ui()
-    prepared_df, _ = apply_latest_upload_policy(df, SAMPLE_INPUT_SOURCE_LABEL, saved_actuals)
-    _store_current_input_state(prepared_df, SAMPLE_INPUT_SOURCE_LABEL)
-    return prepared_df, SAMPLE_INPUT_SOURCE_LABEL
+    df, source_info = load_sample_with_source("current_input")
+    _warn_operator_sample_fallback("현재 입력 샘플", source_info)
+    if source_info.get("source") == "operator":
+        source_label = OPERATOR_SAMPLE_SOURCE_LABEL
+        prepared_df = df.copy()
+    else:
+        source_label = SAMPLE_INPUT_SOURCE_LABEL
+        saved_actuals = _load_saved_actuals_for_ui()
+        prepared_df, _ = apply_latest_upload_policy(df, source_label, saved_actuals)
+    _store_current_input_state(prepared_df, source_label)
+    return prepared_df, source_label
 
 
 def _store_current_input_state(df: pd.DataFrame, source_label: str) -> None:
@@ -1169,15 +1186,17 @@ def _get_historical_input_state() -> tuple[pd.DataFrame, str]:
     if sample_disabled:
         return pd.DataFrame(), ""
     try:
-        historical_df = load_input(
-            HISTORICAL_SAMPLE_INPUT_PATH,
-            sort_by="date",
-            strict_business_day_no=False,
-        )
+        historical_df, source_info = load_sample_with_source("historical_input")
     except Exception:  # noqa: BLE001 - keep the page usable if the bundled sample is missing.
         return pd.DataFrame(), ""
-    _store_historical_input_state(historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL)
-    return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
+    _warn_operator_sample_fallback("과거 샘플", source_info)
+    source_label = (
+        OPERATOR_SAMPLE_SOURCE_LABEL
+        if source_info.get("source") == "operator"
+        else HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
+    )
+    _store_historical_input_state(historical_df, source_label)
+    return historical_df, source_label
 
 
 def _store_historical_input_state(df: pd.DataFrame, source_label: str) -> None:
@@ -3166,6 +3185,13 @@ def _render_input_data_page(
         st.stop()
     historical_df, historical_source_label = _render_historical_upload()
 
+    df, source_label, historical_df, historical_source_label = _render_operator_sample_management(
+        df,
+        source_label,
+        historical_df,
+        historical_source_label,
+        audit_readonly=audit_readonly,
+    )
     st.caption(f"입력 소스: {source_label}")
     df = _render_input_editor(df, source_label, audit_readonly=audit_readonly)
     _store_current_input_state(df, source_label)
@@ -8510,7 +8536,9 @@ def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     try:
         if uploaded_file is not None and not st.session_state.get("force_sample_input", False):
             return _load_uploaded_input(uploaded_file), uploaded_file.name
-        return load_input(SAMPLE_INPUT_PATH), SAMPLE_INPUT_SOURCE_LABEL
+        if st.session_state.get("force_sample_input", False):
+            return _load_packaged_sample_for_app("current_input"), SAMPLE_INPUT_SOURCE_LABEL
+        return _get_current_input_state()
     except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
         st.error(f"입력 파일을 로딩할 수 없습니다: {exc}")
         return None, ""
@@ -8552,19 +8580,213 @@ def _render_historical_upload() -> tuple[pd.DataFrame, str]:
                 return historical_df, uploaded_file.name
 
             if not st.session_state.get(HISTORICAL_SAMPLE_DISABLED_SESSION_KEY, False):
-                historical_df = load_input(
-                    HISTORICAL_SAMPLE_INPUT_PATH,
-                    sort_by="date",
-                    strict_business_day_no=False,
-                )
-                st.info(f"과거 샘플 데이터 {len(historical_df)}행을 기본 반영 중입니다.")
-                return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
+                if st.session_state.get("use_historical_sample_input", False):
+                    historical_df = _load_packaged_sample_for_app("historical_input")
+                    st.info(f"과거 샘플 데이터 {len(historical_df)}행을 기본 반영 중입니다.")
+                    return historical_df, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
+                return _get_historical_input_state()
         except Exception as exc:  # noqa: BLE001 - surface load errors in the UI.
             st.error(f"과거 월 데이터를 로딩할 수 없습니다: {exc}")
             return pd.DataFrame(), ""
 
         st.info("과거 데이터를 비운 상태입니다. 기본 샘플 다시 적용을 누르면 비교값이 다시 표시됩니다.")
     return pd.DataFrame(), ""
+
+
+def _render_operator_sample_management(
+    current_df: pd.DataFrame,
+    current_source_label: str,
+    historical_df: pd.DataFrame,
+    historical_source_label: str,
+    audit_readonly: bool = False,
+) -> tuple[pd.DataFrame, str, pd.DataFrame, str]:
+    with st.expander("운영 샘플 관리", expanded=False):
+        st.caption(
+            "운영 기본값으로 저장하면 앱 리부트 후에도 해당 데이터가 기본 입력값으로 로드됩니다. "
+            "단, 여러 사용자가 같은 앱을 쓰는 경우 이 저장본은 공용 기본값으로 적용됩니다."
+        )
+        current_tab, historical_tab = st.tabs(["현재 입력 샘플", "과거 샘플"])
+        with current_tab:
+            current_df, current_source_label = _render_operator_sample_panel(
+                "current_input",
+                current_df,
+                current_source_label,
+                save_button_label="현재 입력값을 운영 기본값으로 저장",
+                download_file_name="current_input_sample.csv",
+                audit_readonly=audit_readonly,
+            )
+        with historical_tab:
+            historical_df, historical_source_label = _render_operator_sample_panel(
+                "historical_input",
+                historical_df,
+                historical_source_label,
+                save_button_label="과거 샘플을 운영 기본값으로 저장",
+                download_file_name="historical_input_sample.csv",
+                audit_readonly=audit_readonly,
+            )
+    return current_df, current_source_label, historical_df, historical_source_label
+
+
+def _render_operator_sample_panel(
+    kind: str,
+    df: pd.DataFrame,
+    source_label: str,
+    *,
+    save_button_label: str,
+    download_file_name: str,
+    audit_readonly: bool,
+) -> tuple[pd.DataFrame, str]:
+    metadata = dict(read_operator_metadata().get(kind) or {})
+    source_display = _sample_source_display_label(source_label)
+    saved_at = str(metadata.get("saved_at") or metadata.get("reset_at") or "-")
+    saved_rows = metadata.get("rows")
+    saved_rows_display = "-" if saved_rows is None else str(saved_rows)
+    operator_path = get_operator_sample_path(kind)
+
+    status_cols = st.columns(4)
+    status_cols[0].metric("현재 데이터 소스", source_display)
+    status_cols[1].metric("마지막 저장 시각", saved_at)
+    status_cols[2].metric("화면 row 수", str(len(df)))
+    status_cols[3].metric("저장 row 수", saved_rows_display)
+    st.caption(f"운영 저장 파일: {_short_display_path(operator_path)}")
+
+    editor_key = f"operator_sample_editor_{kind}"
+    edited_df = st.data_editor(
+        df,
+        column_config=_input_editor_column_config(),
+        disabled=audit_readonly,
+        hide_index=True,
+        key=editor_key,
+        num_rows="dynamic",
+        use_container_width=True,
+    )
+    working_df = _as_dataframe(edited_df)
+
+    save_col, reload_col, packaged_col, download_col = st.columns(4)
+    if save_col.button(
+        save_button_label,
+        key=f"save_operator_sample_{kind}",
+        disabled=audit_readonly,
+    ):
+        result = save_operator_sample(kind, working_df)
+        if result.get("ok"):
+            loaded_df, _source_info = load_sample_with_source(kind)
+            source_label = OPERATOR_SAMPLE_SOURCE_LABEL
+            working_df = loaded_df
+            _store_operator_sample_state(kind, working_df, source_label)
+            saved_metadata = dict(result.get("metadata") or {})
+            st.success(
+                "운영 기본값 저장 완료: "
+                f"{_short_display_path(Path(str(result.get('path'))))} / "
+                f"{saved_metadata.get('saved_at', '-')} / "
+                f"{result.get('rows', len(working_df))}행"
+            )
+            _render_operator_sample_warnings(result.get("warnings") or [])
+        else:
+            st.error("운영 기본값으로 저장하지 못했습니다. 아래 검증 오류를 확인해 주세요.")
+            _render_operator_sample_errors(result.get("errors") or [])
+            _render_operator_sample_warnings(result.get("warnings") or [])
+
+    if reload_col.button(
+        "저장된 운영 기본값 다시 불러오기",
+        key=f"reload_operator_sample_{kind}",
+    ):
+        if not operator_path.is_file():
+            st.warning("저장된 운영 기본값이 아직 없습니다.")
+        else:
+            loaded_df, source_info = load_sample_with_source(kind)
+            if source_info.get("source") == "operator":
+                working_df = loaded_df
+                source_label = OPERATOR_SAMPLE_SOURCE_LABEL
+                _store_operator_sample_state(kind, working_df, source_label)
+                st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
+            else:
+                st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
+                _render_operator_sample_warnings(source_info.get("warnings") or [])
+
+    if packaged_col.button(
+        "내장 샘플로 화면 초기화",
+        key=f"reset_operator_sample_screen_{kind}",
+    ):
+        working_df = _load_packaged_sample_for_app(kind)
+        source_label = (
+            SAMPLE_INPUT_SOURCE_LABEL
+            if kind == "current_input"
+            else HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
+        )
+        _store_operator_sample_state(kind, working_df, source_label)
+        st.info("내장 샘플을 화면에 다시 불러왔습니다. 저장 버튼을 누르기 전에는 운영 기본값이 바뀌지 않습니다.")
+
+    download_col.download_button(
+        "CSV 다운로드",
+        data=_operator_sample_csv_bytes(working_df),
+        file_name=download_file_name,
+        mime="text/csv",
+        key=f"download_operator_sample_{kind}",
+    )
+    return normalize_direct_input_edits(working_df), source_label
+
+
+def _store_operator_sample_state(kind: str, df: pd.DataFrame, source_label: str) -> None:
+    if kind == "current_input":
+        st.session_state["force_sample_input"] = source_label == SAMPLE_INPUT_SOURCE_LABEL
+        _store_current_input_state(df, source_label)
+        return
+    st.session_state["use_historical_sample_input"] = source_label == HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
+    st.session_state[HISTORICAL_SAMPLE_DISABLED_SESSION_KEY] = False
+    _store_historical_input_state(df, source_label)
+
+
+def _load_packaged_sample_for_app(kind: str) -> pd.DataFrame:
+    path = get_packaged_sample_path(kind)
+    if kind == "historical_input":
+        return load_input(path, sort_by="date", strict_business_day_no=False)
+    return load_input(path)
+
+
+def _sample_source_display_label(source_label: str) -> str:
+    if source_label == OPERATOR_SAMPLE_SOURCE_LABEL:
+        return OPERATOR_SAMPLE_SOURCE_LABEL
+    if source_label in {SAMPLE_INPUT_SOURCE_LABEL, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL}:
+        return PACKAGED_SAMPLE_DISPLAY_LABEL
+    if source_label:
+        return UPLOAD_SAMPLE_DISPLAY_LABEL
+    return "-"
+
+
+def _warn_operator_sample_fallback(title: str, source_info: Mapping[str, Any]) -> None:
+    warnings = list(source_info.get("warnings") or [])
+    if source_info.get("source") != "packaged" or not warnings:
+        return
+    warning_fn = getattr(st, "warning", None)
+    if callable(warning_fn):
+        warning_fn(f"{title} 운영 저장본을 불러오지 못해 내장 샘플을 사용합니다.")
+
+
+def _operator_sample_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def _render_operator_sample_errors(messages: object) -> None:
+    for message in list(messages or []):
+        st.markdown(f"- {escape(str(message))}")
+
+
+def _render_operator_sample_warnings(messages: object) -> None:
+    warning_messages = [str(message) for message in list(messages or []) if str(message)]
+    if not warning_messages:
+        return
+    st.warning("확인 필요: " + " / ".join(warning_messages))
+
+
+def _short_display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        text = str(path)
+    if len(text) <= 80:
+        return text
+    return f".../{path.parent.name}/{path.name}"
 
 
 def _render_input_editor(
@@ -8649,7 +8871,13 @@ def apply_latest_upload_policy(
 
 
 def _is_current_upload_source(source_label: str) -> bool:
-    return bool(source_label) and source_label != SAMPLE_INPUT_SOURCE_LABEL
+    non_upload_sources = {
+        SAMPLE_INPUT_SOURCE_LABEL,
+        HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL,
+        OPERATOR_SAMPLE_SOURCE_LABEL,
+        "",
+    }
+    return bool(source_label) and source_label not in non_upload_sources
 
 
 def _load_saved_actuals_for_ui() -> pd.DataFrame:
