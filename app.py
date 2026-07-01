@@ -35,11 +35,16 @@ from src.display_labels import (
     get_strategy_label,
     get_strategy_short_description,
 )
-from src.excel_exporter import (
-    SCENARIO_GRID_REQUIRED_COLUMNS,
-    export_daily_report,
-    prepare_scenario_grid_export_frame,
-)
+from src.excel_exporter import export_daily_report
+
+try:
+    from src.excel_exporter import (
+        SCENARIO_GRID_REQUIRED_COLUMNS as _EXCEL_SCENARIO_GRID_REQUIRED_COLUMNS,
+        prepare_scenario_grid_export_frame as _excel_prepare_scenario_grid_export_frame,
+    )
+except ImportError:
+    _EXCEL_SCENARIO_GRID_REQUIRED_COLUMNS = None
+    _excel_prepare_scenario_grid_export_frame = None
 from src.final_actual_store import load_final_actuals
 from src.forecast_models import (
     F1_CUMULATIVE_RATE,
@@ -159,6 +164,30 @@ INPUT_TEMPLATE_SAMPLE_ROWS = (
         None,
         "",
     ),
+)
+FALLBACK_SCENARIO_GRID_REQUIRED_COLUMNS = (
+    "scenario",
+    "forecast_model",
+    "model_name",
+    "expected_month_end_amount",
+    "target_status",
+    "target_variance",
+    "surplus_to_target",
+    "strategy_type",
+    "strategy_code",
+    "overachievement_strategy",
+    "strategy_label",
+    "strategy_group",
+    "stretch_uplift",
+    "revised_monthly_target",
+    "remaining_surplus_buffer",
+    "minimum_remaining_to_hit_target",
+    "relief_amount",
+    "recommended_action",
+    "risk_note",
+)
+SCENARIO_GRID_REQUIRED_COLUMNS = (
+    _EXCEL_SCENARIO_GRID_REQUIRED_COLUMNS or FALLBACK_SCENARIO_GRID_REQUIRED_COLUMNS
 )
 HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS = (
     ("2026-03-02", "월", 1, True, "월초특수", 35.0, 32.0, 33.0, 30.0, "과거 월 예시"),
@@ -3911,6 +3940,64 @@ def _render_validation_guard(context: Mapping[str, Any]) -> bool:
     st.warning("입력값에 고쳐야 할 항목이 있어 이 상세 페이지의 계산 결과를 표시하지 않습니다.")
     _render_validation(validation_result)
     return True
+
+
+def prepare_scenario_grid_export_frame(data: pd.DataFrame | Any) -> pd.DataFrame:
+    if callable(_excel_prepare_scenario_grid_export_frame):
+        return _excel_prepare_scenario_grid_export_frame(data)
+    return _prepare_scenario_grid_export_frame_fallback(data)
+
+
+def _prepare_scenario_grid_export_frame_fallback(data: pd.DataFrame | Any) -> pd.DataFrame:
+    df = _as_dataframe(data)
+    if df.empty and len(df.columns) == 0:
+        return pd.DataFrame(columns=SCENARIO_GRID_REQUIRED_COLUMNS)
+
+    result = df.copy()
+    result["scenario"] = _first_existing_series(result, ("scenario", "scenario_id"))
+    result["forecast_model"] = _first_existing_series(result, ("forecast_model",))
+    result["model_name"] = result["forecast_model"].map(get_forecast_model_label)
+    result["strategy_code"] = [
+        get_strategy_code(_scenario_strategy_source(row.to_dict()))
+        for _, row in result.iterrows()
+    ]
+    if "strategy_type" not in result.columns:
+        result["strategy_type"] = None
+    result["strategy_label"] = result["strategy_code"].map(get_strategy_label)
+    result["strategy_group"] = result["strategy_code"].map(get_strategy_group)
+    result["expected_month_end_amount"] = [
+        _first_non_missing_value(row, ("forecast_after_provision", "forecast_amount"))
+        for _, row in result.iterrows()
+    ]
+    result["risk_note"] = [
+        _first_non_missing_value(row, ("risk_note", "comment", "warnings", "recommended_action"))
+        or ""
+        for _, row in result.iterrows()
+    ]
+
+    for column in SCENARIO_GRID_REQUIRED_COLUMNS:
+        if column not in result.columns:
+            result[column] = None
+    ordered_columns = [
+        *[column for column in SCENARIO_GRID_REQUIRED_COLUMNS if column in result.columns],
+        *[column for column in result.columns if column not in set(SCENARIO_GRID_REQUIRED_COLUMNS)],
+    ]
+    return result.loc[:, ordered_columns]
+
+
+def _first_existing_series(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
+    for column in columns:
+        if column in df.columns:
+            return df[column]
+    return pd.Series([None] * len(df), index=df.index)
+
+
+def _first_non_missing_value(row: Mapping[str, Any], columns: tuple[str, ...]) -> object:
+    for column in columns:
+        value = row.get(column)
+        if not _is_missing(value):
+            return value
+    return None
 
 
 def _scenario_grid_column_check_df(scenario_df: pd.DataFrame) -> pd.DataFrame:
