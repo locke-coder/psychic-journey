@@ -8,12 +8,17 @@ from typing import Mapping
 
 import pandas as pd
 
-
-STATUS_LABELS = {
-    "UNDER_TARGET": "목표 보정 필요",
-    "ON_TARGET": "유지/모니터링",
-    "OVER_TARGET": "초과달성 관리",
-}
+from src.display_labels import (
+    SHORT_STRATEGY_LABELS,
+    STATUS_LABELS,
+    STRATEGY_GROUP_LABELS,
+    STRATEGY_LABELS,
+    get_status_label,
+    get_strategy_code,
+    get_strategy_group,
+    get_strategy_label,
+    get_strategy_short_description,
+)
 
 STATUS_CLASSES = {
     "UNDER_TARGET": "under-target",
@@ -27,48 +32,11 @@ OPERATION_MODE_DESCRIPTIONS = {
     "OVER_TARGET": "목표를 상회하는 흐름입니다. 초과분을 버퍼·Stretch·품질 기준으로 나눠 봅니다.",
 }
 
-SCENARIO_LABELS = {
-    "P1_ALL_REMAINING": "전체 잔여 보정",
-    "P2_CLOSE_DAY_FOCUSED": "마감일 집중",
-    "P3_NON_CLOSE_DAY_FOCUSED": "비마감일 보정",
-    "O1_TARGET_HOLD_BUFFER": "버퍼 유지",
-    "O2_STRETCH_TARGET_CAPTURE": "Stretch 전환",
-    "O3_QUALITY_GUARD_RELIEF": "품질 방어",
-    "N1_MAINTAIN_TARGET": "유지/모니터링",
-    "N2_MONITOR_BUFFER": "유지/모니터링",
-    "N3_QUALITY_CHECK": "유지/모니터링",
-    "NEUTRAL": "유지/모니터링",
-    "MAINTAIN": "유지/모니터링",
-}
-
-SHORT_SCENARIO_LABELS = {
-    "P1": "전체 잔여 보정",
-    "P2": "마감일 집중",
-    "P3": "비마감일 보정",
-    "O1": "버퍼 유지",
-    "O2": "Stretch 전환",
-    "O3": "품질 방어",
-    "N1": "유지/모니터링",
-    "N2": "유지/모니터링",
-    "N3": "유지/모니터링",
-}
+SCENARIO_LABELS = dict(STRATEGY_LABELS)
+SHORT_SCENARIO_LABELS = dict(SHORT_STRATEGY_LABELS)
 
 SCENARIO_DESCRIPTIONS = {
-    "P1": "남은 영업일 전체에 부족분을 균등하게 배분합니다.",
-    "P2": "마감일 중심으로 부족분 회복 압력을 높입니다.",
-    "P3": "비마감일에서 먼저 부족분을 흡수합니다.",
-    "O1": "현재 초과분을 안전 버퍼로 유지해 취소·철회·미결제 리스크를 흡수합니다.",
-    "O2": "초과달성 흐름을 반영해 상향 목표 또는 Stretch 목표를 검토합니다.",
-    "O3": "무리한 추가 영업보다 계약 품질과 실적인정 가능성을 우선 점검합니다.",
-    "N1": "목표선에 가까운 흐름을 유지하며 다음 마감 누적선을 확인합니다.",
-    "N2": "작은 변동에도 목표선이 흔들리지 않도록 완충 여지를 살핍니다.",
-    "N3": "추가 압박보다 실적인정 가능성과 계약 품질을 확인합니다.",
-}
-
-STRATEGY_GROUP_LABELS = {
-    "PROVISION": "목표 보정",
-    "OVERACHIEVEMENT": "초과달성 운영",
-    "NEUTRAL": "유지/모니터링",
+    code: get_strategy_short_description(code) for code in SHORT_SCENARIO_LABELS
 }
 
 
@@ -84,8 +52,7 @@ def format_krw(value: object) -> str:
 
 def status_label(target_status: object) -> str:
     """Return the business-facing label for a target status."""
-    text = "" if _is_missing(target_status) else str(target_status)
-    return STATUS_LABELS.get(text, text or "계산 불가")
+    return get_status_label(target_status)
 
 
 def status_class(target_status: object) -> str:
@@ -105,24 +72,7 @@ def operation_mode_description(target_status: object) -> str:
 
 def scenario_display_name(scenario_id: object) -> str:
     """Return the display name for a scenario or strategy id."""
-    if _is_missing(scenario_id):
-        return "유지/모니터링"
-
-    text = str(scenario_id)
-    upper_text = text.upper()
-    if text in SCENARIO_LABELS:
-        return SCENARIO_LABELS[text]
-    if upper_text in SCENARIO_LABELS:
-        return SCENARIO_LABELS[upper_text]
-    if text in SHORT_SCENARIO_LABELS:
-        return SHORT_SCENARIO_LABELS[text]
-
-    token = _scenario_token(text)
-    if token in SHORT_SCENARIO_LABELS:
-        return SHORT_SCENARIO_LABELS[token]
-    if "NEUTRAL" in upper_text or "MAINTAIN" in upper_text:
-        return "유지/모니터링"
-    return text
+    return get_strategy_label(scenario_id)
 
 
 def scenario_description(scenario_id: object) -> str:
@@ -142,7 +92,7 @@ def scenario_kind_class(scenario_id: object) -> str:
     """Return the scenario kind class without changing source ids."""
     if _is_missing(scenario_id):
         return "neutral"
-    token = _scenario_token(str(scenario_id))
+    token = get_strategy_code(scenario_id)
     if token in {"P1", "P2", "P3"}:
         return "p"
     if token in {"O1", "O2", "O3"}:
@@ -439,28 +389,11 @@ def _scenario_group_label(strategy_type: object, scenario_id: object) -> str:
         text = str(strategy_type)
         if text in STRATEGY_GROUP_LABELS:
             return STRATEGY_GROUP_LABELS[text]
-    kind_class = scenario_kind_class(scenario_id)
-    if kind_class == "p":
-        return STRATEGY_GROUP_LABELS["PROVISION"]
-    if kind_class in {"o1", "o2", "o3"}:
-        return STRATEGY_GROUP_LABELS["OVERACHIEVEMENT"]
-    return STRATEGY_GROUP_LABELS["NEUTRAL"]
+    return get_strategy_group(scenario_id)
 
 
 def _scenario_token(identifier: str) -> str:
-    text = str(identifier)
-    upper_text = text.upper()
-    if upper_text in SHORT_SCENARIO_LABELS:
-        return upper_text
-    for token in SHORT_SCENARIO_LABELS:
-        if upper_text == token or upper_text.startswith(f"{token}_") or upper_text.endswith(f"_{token}"):
-            return token
-        if f"_{token}_" in upper_text:
-            return token
-    parts = upper_text.split("_")
-    if len(parts) >= 2 and parts[0] in {"F1", "F2", "F3"} and parts[1] in SHORT_SCENARIO_LABELS:
-        return parts[1]
-    return upper_text
+    return get_strategy_code(identifier)
 
 
 def _format_month_value(value: object) -> str:

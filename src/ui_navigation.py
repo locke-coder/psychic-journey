@@ -15,8 +15,7 @@ PAGE_DEFINITIONS = OrderedDict(
     (
         ("home", {"title": "마감 페이스 체크", "short_title": "홈"}),
         ("input", {"title": "입력 · 데이터", "short_title": "입력"}),
-        ("forecast", {"title": "KPI · 예측", "short_title": "KPI"}),
-        ("scenarios", {"title": "시나리오", "short_title": "전략"}),
+        ("forecast_strategy", {"title": "예측 · 전략 통합", "short_title": "예측전략"}),
         ("report", {"title": "보고 메모", "short_title": "보고"}),
         ("history", {"title": "예측 이력", "short_title": "이력"}),
         ("excel", {"title": "Excel 공유", "short_title": "Excel"}),
@@ -24,10 +23,17 @@ PAGE_DEFINITIONS = OrderedDict(
     )
 )
 
+PAGE_ALIASES = {
+    "forecast": "forecast_strategy",
+    "scenarios": "forecast_strategy",
+    "scenario": "forecast_strategy",
+}
+
 
 def validate_page_key(page_key: object) -> str:
     """Return a safe page key, falling back to home."""
     key = str(page_key or "").strip()
+    key = PAGE_ALIASES.get(key, key)
     if key in PAGE_DEFINITIONS:
         return key
     return "home"

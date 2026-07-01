@@ -16,6 +16,12 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from src.display_labels import (
+    get_forecast_model_label,
+    get_strategy_code,
+    get_strategy_group,
+    get_strategy_label,
+)
 from src.report_builder import append_model_error_summary_to_report
 
 
@@ -102,11 +108,51 @@ CONFIDENCE_BAND_COLUMNS = (
 )
 INSIGHTS_COLUMNS = ("insight",)
 SCENARIO_GRID_REQUIRED_COLUMNS = (
+    "scenario",
+    "forecast_model",
+    "model_name",
+    "expected_month_end_amount",
     "target_status",
     "target_variance",
     "surplus_to_target",
     "strategy_type",
+    "strategy_code",
     "overachievement_strategy",
+    "strategy_label",
+    "strategy_group",
+    "stretch_uplift",
+    "revised_monthly_target",
+    "remaining_surplus_buffer",
+    "minimum_remaining_to_hit_target",
+    "relief_amount",
+    "recommended_action",
+    "risk_note",
+)
+SCENARIO_GRID_EXPORT_COLUMN_ORDER = (
+    *SCENARIO_GRID_REQUIRED_COLUMNS,
+    "scenario_id",
+    "provision_strategy",
+    "metric",
+    "as_of_date",
+    "monthly_target",
+    "current_actual_cum",
+    "current_target_cum",
+    "remaining_target",
+    "forecast_amount",
+    "forecast_rate",
+    "gap_to_target",
+    "required_uplift",
+    "allocated_uplift",
+    "unallocated_uplift",
+    "revised_remaining_target",
+    "forecast_after_provision",
+    "gap_after_provision",
+    "next_close_date",
+    "next_close_required",
+    "risk_level",
+    "status",
+    "comment",
+    "warnings",
 )
 CLOSECYCLE_REQUIRED_CUMULATIVE_COLUMNS = (
     "sales_target_cum",
@@ -184,7 +230,7 @@ def export_daily_report(
     _write_mapping_sheet(summary_sheet, summary_dict)
     _write_dataframe_sheet(
         workbook.create_sheet("ScenarioGrid"),
-        _ensure_dataframe_columns(scenario_df, SCENARIO_GRID_REQUIRED_COLUMNS),
+        prepare_scenario_grid_export_frame(scenario_df),
     )
     _write_dataframe_sheet(workbook.create_sheet("DailyRevisedTargets"), revised_targets_df)
     _write_dataframe_sheet(
@@ -505,6 +551,131 @@ def _ensure_dataframe_columns(
         if column not in df.columns:
             df[column] = None
     return df
+
+
+def prepare_scenario_grid_export_frame(data: pd.DataFrame | Any) -> pd.DataFrame:
+    """Add D03 display/export columns to ScenarioGrid without changing rows."""
+    df = _as_dataframe(data)
+    if df.empty and len(df.columns) == 0:
+        return pd.DataFrame(columns=SCENARIO_GRID_EXPORT_COLUMN_ORDER)
+
+    result = df.copy()
+    result["scenario"] = _first_series(result, ("scenario", "scenario_id"))
+    result["forecast_model"] = _first_series(result, ("forecast_model",))
+    result["model_name"] = [
+        get_forecast_model_label(_forecast_model_for_row(row))
+        for _, row in result.iterrows()
+    ]
+    result["strategy_code"] = [
+        get_strategy_code(_strategy_source_for_row(row))
+        for _, row in result.iterrows()
+    ]
+    if "strategy_type" not in result.columns:
+        result["strategy_type"] = None
+    result["strategy_type"] = [
+        _strategy_type_for_code(row.get("strategy_code"), row.get("strategy_type"))
+        for _, row in result.iterrows()
+    ]
+    result["strategy_label"] = result["strategy_code"].map(get_strategy_label)
+    result["strategy_group"] = result["strategy_code"].map(get_strategy_group)
+    result["expected_month_end_amount"] = [
+        _first_value(row, ("forecast_after_provision", "forecast_amount"))
+        for _, row in result.iterrows()
+    ]
+    result["risk_note"] = [_risk_note_for_row(row) for _, row in result.iterrows()]
+
+    for column in SCENARIO_GRID_REQUIRED_COLUMNS:
+        if column not in result.columns:
+            result[column] = None
+
+    ordered_columns = [
+        *[column for column in SCENARIO_GRID_EXPORT_COLUMN_ORDER if column in result.columns],
+        *[
+            column
+            for column in result.columns
+            if column not in set(SCENARIO_GRID_EXPORT_COLUMN_ORDER)
+        ],
+    ]
+    return result.loc[:, ordered_columns]
+
+
+def _first_series(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
+    for column in columns:
+        if column in df.columns:
+            return df[column]
+    return pd.Series([None] * len(df), index=df.index)
+
+
+def _forecast_model_for_row(row: Mapping[str, Any]) -> object:
+    value = row.get("forecast_model")
+    if not _is_missing_value(value):
+        return value
+    scenario_id = str(row.get("scenario_id") or row.get("scenario") or "")
+    prefix = scenario_id.split("_", maxsplit=1)[0]
+    return prefix if prefix in {"F1", "F2", "F3"} else value
+
+
+def _strategy_source_for_row(row: Mapping[str, Any]) -> object:
+    for key in (
+        "overachievement_strategy",
+        "provision_strategy",
+        "neutral_strategy",
+        "strategy_id",
+        "strategy_code",
+        "scenario",
+        "scenario_id",
+    ):
+        value = row.get(key)
+        if not _is_missing_value(value) and str(value):
+            return value
+    return ""
+
+
+def _strategy_type_for_code(strategy_code: object, existing: object) -> object:
+    if not _is_missing_value(existing) and str(existing):
+        return existing
+    code = get_strategy_code(strategy_code)
+    if code in {"P1", "P2", "P3"}:
+        return "PROVISION"
+    if code in {"O1", "O2", "O3"}:
+        return "OVERACHIEVEMENT"
+    return "NEUTRAL"
+
+
+def _first_value(row: Mapping[str, Any], columns: tuple[str, ...]) -> object:
+    for column in columns:
+        value = row.get(column)
+        if not _is_missing_value(value):
+            return value
+    return None
+
+
+def _risk_note_for_row(row: Mapping[str, Any]) -> str:
+    for key in ("risk_note", "comment", "warnings", "recommended_action"):
+        value = row.get(key)
+        if _is_missing_value(value):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            text = ", ".join(str(item) for item in value if str(item))
+        else:
+            text = str(value)
+        if text.strip():
+            return text.strip()
+    return "특이 리스크 없음"
+
+
+def _is_missing_value(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if missing is pd.NA:
+        return True
+    if isinstance(missing, bool):
+        return missing
+    return False
 
 
 def _prepare_close_cycle_export_frame(data: pd.DataFrame | Any) -> pd.DataFrame:

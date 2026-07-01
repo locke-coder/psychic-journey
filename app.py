@@ -25,7 +25,21 @@ except ModuleNotFoundError:  # pragma: no cover - local test runtime may omit St
 from src import history_schema
 from src.backtest_engine import build_backtest_dataset, summarize_by_forecast_model
 from src.close_cycle_engine import _coerce_is_close_day, build_close_cycle_summary
-from src.excel_exporter import export_daily_report
+from src.display_labels import (
+    get_forecast_model_label,
+    get_metric_label,
+    get_operation_mode,
+    get_status_label,
+    get_strategy_code,
+    get_strategy_group,
+    get_strategy_label,
+    get_strategy_short_description,
+)
+from src.excel_exporter import (
+    SCENARIO_GRID_REQUIRED_COLUMNS,
+    export_daily_report,
+    prepare_scenario_grid_export_frame,
+)
 from src.final_actual_store import load_final_actuals
 from src.forecast_models import (
     F1_CUMULATIVE_RATE,
@@ -91,8 +105,10 @@ from src.ui_navigation import (
     PAGE_DEFINITIONS,
     get_current_page,
     page_title,
+    validate_page_key,
 )
 from src.ui_pages import render_page
+from src.ui_styles import inject_global_styles
 from src.ui_theme import get_pace_check_css
 from src.validator import validate_input
 from src.visualization_builder import (
@@ -357,6 +373,13 @@ RATE_COLUMNS = {
     "mean_error_rate",
     "median_error_rate",
 }
+TECHNICAL_CODE_COLUMNS = {
+    "scenario",
+    "scenario_id",
+    "strategy_key",
+    "strategy_code",
+    "forecast_key",
+}
 DIRECT_EDITABLE_COLUMNS = (
     "sales_target_daily",
     "recognized_target_daily",
@@ -489,10 +512,14 @@ VALIDATION_COLUMN_LABELS = {
 }
 DISPLAY_COLUMN_LABELS = {
     **VALIDATION_COLUMN_LABELS,
+    "scenario": "시나리오",
     "scenario_id": "시나리오",
     "forecast_model": "예측모델",
     "forecast_basis": "고정 예측모델",
     "strategy_key": "전략 코드",
+    "strategy_code": "전략 코드",
+    "strategy_label": "전략명",
+    "strategy_group": "전략군",
     "provision_strategy": "운영전략",
     "strategy_effect_type": "O전략 차이",
     "strategy_difference_summary": "전략 차이 요약",
@@ -501,16 +528,16 @@ DISPLAY_COLUMN_LABELS = {
     "forecast_reference_value": "F예측 월말 예상",
     "forecast_rate": "예상 달성률",
     "remaining_target": "잔여 목표",
-    "forecast_amount": "월말 예상 실적",
-    "expected_month_end_amount": "모델별 월말 예상 실적",
+    "forecast_amount": get_metric_label("forecast_amount"),
+    "expected_month_end_amount": get_metric_label("expected_month_end_amount"),
     "gap_to_target": "목표 미달 예상분",
-    "target_variance": "목표 대비 차이",
+    "target_variance": get_metric_label("target_variance"),
     "target_variance_after_strategy": "전략 적용 후 목표 대비 차이",
-    "surplus_to_target": "초과 예상분",
+    "surplus_to_target": get_metric_label("surplus_to_target"),
     "base_forecast_amount": "기준 F예측값",
     "strategy_expected_amount": "전략 운영 기준값",
     "surplus_buffer": "안전버퍼",
-    "target_status": "목표 상태",
+    "target_status": get_metric_label("target_status"),
     "strategy_type": "전략 구분",
     "overachievement_strategy": "초과달성 전략",
     "required_uplift": "필요 상향",
@@ -530,6 +557,8 @@ DISPLAY_COLUMN_LABELS = {
     "risk_level": "위험등급",
     "status": "계산 상태",
     "recommended_action": "권장 조치",
+    "recommended": "추천 여부",
+    "risk_note": "리스크 메모",
     "comment": "설명",
     "warnings": "확인 사항",
     "date": "날짜",
@@ -594,18 +623,18 @@ DISPLAY_VALUE_LABELS = {
     F1_CUMULATIVE_RATE: "F1 누적 달성률 모델",
     F2_LAST_TWO_CLOSES: "F2 직전 2개 완료 마감차수 모델",
     F3_DAY_CLOSE_WEIGHTED: "F3 마감일/비마감일 가중 모델",
-    P1_ALL_REMAINING: "P1 전체 잔여일 배분",
-    P2_CLOSE_DAY_FOCUSED: "P2 마감일 우선 배분",
-    P3_NON_CLOSE_DAY_FOCUSED: "P3 비마감일 우선 배분",
-    O1_TARGET_HOLD_BUFFER: "O1 목표 유지 안전버퍼",
-    O2_STRETCH_TARGET_CAPTURE: "O2 상향 목표 전환",
-    O3_QUALITY_GUARD_RELIEF: "O3 계약 품질 방어",
+    P1_ALL_REMAINING: f"P1 {get_strategy_label('P1')}",
+    P2_CLOSE_DAY_FOCUSED: f"P2 {get_strategy_label('P2')}",
+    P3_NON_CLOSE_DAY_FOCUSED: f"P3 {get_strategy_label('P3')}",
+    O1_TARGET_HOLD_BUFFER: f"O1 {get_strategy_label('O1')}",
+    O2_STRETCH_TARGET_CAPTURE: f"O2 {get_strategy_label('O2')}",
+    O3_QUALITY_GUARD_RELIEF: f"O3 {get_strategy_label('O3')}",
     N1_MAINTAIN_TARGET: "N1 목표 유지",
     N2_MONITOR_BUFFER: "N2 버퍼 모니터링",
     N3_QUALITY_CHECK: "N3 품질 점검",
-    "UNDER_TARGET": "목표 미달",
-    "ON_TARGET": "목표선 근접",
-    "OVER_TARGET": "목표 초과",
+    "UNDER_TARGET": get_status_label("UNDER_TARGET"),
+    "ON_TARGET": get_status_label("ON_TARGET"),
+    "OVER_TARGET": get_status_label("OVER_TARGET"),
     "UNKNOWN_TARGET_STATUS": "계산 불가",
     "PROVISION": "목표 보정",
     "OVERACHIEVEMENT": "초과달성 운영",
@@ -628,21 +657,25 @@ NEXT_CLOSE_REQUIRED_EXPLANATION = (
     "다음 마감 필요실적은 월 목표 부족분이 아니라, "
     "다음 마감일까지의 누적 계획선을 맞추기 위해 필요한 실적입니다."
 )
+SECURITY_WARNING_TEXT = (
+    "운영 주의: Public Streamlit 또는 외부 공개 URL에는 실제 영업실적을 업로드하지 마세요. "
+    "실데이터는 Private/사내망/권한 통제 환경에서만 사용하세요."
+)
 KPI_HELP_TEXTS = {
     NEXT_CLOSE_REQUIRED_LABEL: NEXT_CLOSE_REQUIRED_EXPLANATION,
 }
 TARGET_STATUS_OPERATION_MODE_LABELS = {
-    "UNDER_TARGET": "목표 보정 필요",
-    "ON_TARGET": "유지/모니터링",
-    "OVER_TARGET": "초과달성 관리",
+    "UNDER_TARGET": get_operation_mode("UNDER_TARGET"),
+    "ON_TARGET": get_operation_mode("ON_TARGET"),
+    "OVER_TARGET": get_operation_mode("OVER_TARGET"),
 }
 OVERACHIEVEMENT_MATRIX_LABELS = {
-    "O1": "버퍼 유지",
-    "O2": "Stretch 전환",
-    "O3": "품질 방어",
-    O1_TARGET_HOLD_BUFFER: "버퍼 유지",
-    O2_STRETCH_TARGET_CAPTURE: "Stretch 전환",
-    O3_QUALITY_GUARD_RELIEF: "품질 방어",
+    "O1": get_strategy_label("O1"),
+    "O2": get_strategy_label("O2"),
+    "O3": get_strategy_label("O3"),
+    O1_TARGET_HOLD_BUFFER: get_strategy_label("O1"),
+    O2_STRETCH_TARGET_CAPTURE: get_strategy_label("O2"),
+    O3_QUALITY_GUARD_RELIEF: get_strategy_label("O3"),
 }
 VALIDATION_MESSAGE_TRANSLATIONS = {
     "business_day_no must be in ascending order.": (
@@ -1057,6 +1090,7 @@ def _with_page_callbacks(
                 base_config,
                 audit_readonly=bool(context.get("audit_readonly", False)),
             ),
+            "render_forecast_strategy_page": lambda: _render_forecast_strategy_detail_page(context),
             "render_forecast_page": lambda: _render_forecast_detail_page(context),
             "render_scenarios_page": lambda: _render_scenarios_detail_page(context),
             "render_report_page": lambda: _render_report_detail_page(context),
@@ -1331,6 +1365,13 @@ def _render_same_window_side_nav(st_module: Any, active_page: str) -> None:
                 type="primary" if is_active else "secondary",
             ):
                 _navigate_same_window(st_module, page_key)
+        st_module.markdown(
+            '<section class="security-warning-block">'
+            '<div class="security-warning-block__label">운영 보안</div>'
+            f"<strong>{escape(SECURITY_WARNING_TEXT)}</strong>"
+            "</section>",
+            unsafe_allow_html=True,
+        )
 
 
 def _render_same_window_top_status(active_page: str, meta: Mapping[str, object]) -> None:
@@ -1360,7 +1401,7 @@ def _render_same_window_top_status(active_page: str, meta: Mapping[str, object])
 
 
 def _navigate_same_window(st_module: Any, page_key: object) -> None:
-    safe_page = str(page_key) if str(page_key) in PAGE_DEFINITIONS else "home"
+    safe_page = validate_page_key(page_key)
     st_module.session_state["pace_current_page"] = safe_page
     audit_readonly = _is_audit_readonly_mode(st_module)
     try:
@@ -1436,6 +1477,12 @@ def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
         """,
         unsafe_allow_html=True,
     )
+    _render_month_close_status_panel(
+        context,
+        selected_row,
+        validation_result,
+        next_close_result,
+    )
 
     chart_col, decision_col = st.columns([0.68, 0.32], gap="large")
     with chart_col:
@@ -1444,7 +1491,6 @@ def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
         _render_home_decision_panel(selected_row, validation_result, next_close_result)
 
     _render_home_status_facts(validation_result, selected_row, next_close_result)
-    render_next_action_panel("home", context)
 
     _render_home_scenario_summary(
         scenario_df,
@@ -1484,20 +1530,97 @@ def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
         )
 
 
+def _render_month_close_status_panel(
+    context: Mapping[str, Any],
+    selected_row: pd.Series,
+    validation_result: Mapping[str, Any],
+    next_close_result: Mapping[str, Any],
+) -> None:
+    df = _as_dataframe(context.get("df"))
+    as_of_date = context.get("as_of_date")
+    target_status = selected_row.get("target_status")
+    scenario_id = str(selected_row.get("scenario_id") or "")
+    strategy_code = get_strategy_code(scenario_id or selected_row.get("provision_strategy"))
+    strategy_label = (
+        f"{strategy_code} {get_strategy_label(strategy_code)}"
+        if strategy_code
+        else "예측 계산 후 표시"
+    )
+    current_day_no = _projection_current_day_no(df, as_of_date)
+    total_business_days = _as_float(df["business_day_no"].max()) if "business_day_no" in df else float("nan")
+    progress_value = (
+        f"{int(current_day_no)} / {int(total_business_days)}"
+        if math.isfinite(current_day_no) and math.isfinite(total_business_days)
+        else "입력 후 계산"
+    )
+    basis_month = (
+        pd.Timestamp(as_of_date).strftime("%Y-%m")
+        if not _is_missing(as_of_date)
+        else "입력 후 계산"
+    )
+    status_text = get_status_label(target_status)
+    status_tone = {
+        "UNDER_TARGET": "under",
+        "ON_TARGET": "on",
+        "OVER_TARGET": "over",
+    }.get(str(target_status), "on")
+    items = (
+        ("기준월", basis_month),
+        ("영업일 진행", progress_value),
+        (get_metric_label("target_status"), status_text),
+        (get_metric_label("expected_month_end_amount"), format_amount(selected_row.get("forecast_after_provision"))),
+        (get_metric_label("target_variance"), _format_signed_amount(selected_row.get("target_variance"))),
+        (
+            get_metric_label("next_close_required_amount"),
+            format_amount(next_close_result.get("required_to_recover_next_close_cum")),
+        ),
+        ("운영모드", get_operation_mode(target_status)),
+        ("추천 전략", strategy_label),
+    )
+    item_html = "".join(
+        '<div class="month-close-hero__item">'
+        f"<span>{escape(str(label))}</span>"
+        f"<strong>{escape(str(value))}</strong>"
+        "</div>"
+        for label, value in items
+    )
+    st.markdown(
+        '<section class="month-close-hero">'
+        '<div class="month-close-hero__head">'
+        '<div>'
+        '<div class="month-close-hero__eyebrow">월마감 상태판</div>'
+        '<h1>월마감 상태판</h1>'
+        '<p>현재 상태, 다음 마감 누적선, 추천 운영전략을 한 번에 확인합니다.</p>'
+        '</div>'
+        f'<span class="strategy-badge strategy-badge--{escape(status_tone)}">{escape(strategy_label)}</span>'
+        '</div>'
+        f'<div class="month-close-hero__grid">{item_html}</div>'
+        '</section>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_home_status_facts(
     validation_result: Mapping[str, Any],
     selected_row: pd.Series,
     next_close_result: Mapping[str, Any],
 ) -> None:
+    scenario_id = str(selected_row.get("scenario_id") or "")
+    strategy_code = get_strategy_code(scenario_id or selected_row.get("provision_strategy"))
+    strategy_label = (
+        f"{strategy_code} {get_strategy_label(strategy_code)}"
+        if strategy_code
+        else "예측 계산 후 표시"
+    )
     facts = (
-        ("target_status", _localize_display_value(selected_row.get("target_status"))),
-        ("target_variance", format_amount(selected_row.get("target_variance"))),
-        ("surplus_to_target", format_amount(selected_row.get("surplus_to_target"))),
+        (get_metric_label("current_cumulative_actual"), format_amount(validation_result.get("current_actual_cum"))),
+        (get_metric_label("expected_month_end_amount"), format_amount(selected_row.get("forecast_after_provision"))),
+        (get_metric_label("target_variance"), _format_signed_amount(selected_row.get("target_variance"))),
         (
-            "다음 마감 누적선 필요실적",
+            get_metric_label("next_close_required_amount"),
             format_amount(next_close_result.get("required_to_recover_next_close_cum")),
         ),
-        ("현재 누적 실적", format_amount(validation_result.get("current_actual_cum"))),
+        ("추천 전략", strategy_label),
     )
     fact_html = "".join(
         '<div class="metric-card-compact">'
@@ -1941,10 +2064,7 @@ def _render_home_decision_panel(
     target_status = selected_row.get("target_status")
     scenario_id = str(selected_row.get("scenario_id") or "")
     _forecast_key, strategy_key = _split_scenario_id(scenario_id)
-    strategy_name = SCENARIO_STRATEGY_DEFINITIONS.get(strategy_key, {}).get(
-        "name",
-        scenario_id or "예측 계산 후 표시",
-    )
+    strategy_name = get_strategy_label(strategy_key or selected_row.get("provision_strategy"))
     risk_level = _localize_display_value(selected_row.get("risk_level", "N/A"))
     status = _localize_display_value(selected_row.get("status", ""))
     decision_rows = (
@@ -2004,6 +2124,7 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
     page_label = {
         "home": "홈",
         "input": "입력 · 데이터",
+        "forecast_strategy": "예측 · 전략 통합",
         "forecast": "KPI · 예측",
         "scenarios": "시나리오",
         "report": "보고 메모",
@@ -2014,11 +2135,15 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
     action_items = {
         "home": (
             _home_next_action_text(target_status, validation_result, next_close_result),
-            "KPI · 예측에서 target_status와 모델별 월마감 예상값을 확인합니다.",
+            "예측 · 전략 통합에서 target_status와 모델별 월마감 예상값을 확인합니다.",
         ),
         "input": (
             "누락 행, 빈 누적 실적, is_close_day 입력 상태를 먼저 확인합니다.",
-            "입력 검증 오류가 없으면 KPI · 예측으로 이동합니다.",
+            "입력 검증 오류가 없으면 예측 · 전략 통합으로 이동합니다.",
+        ),
+        "forecast_strategy": (
+            "상단 결론 요약에서 목표 상태, 목표 대비 차이, 다음 마감 누적선을 먼저 확인합니다.",
+            "선택 시나리오를 바꿔 운영 판단판과 상세 표를 같은 화면에서 비교합니다.",
         ),
         "forecast": (
             "target_status와 다음 마감 누적선 필요실적을 확인합니다.",
@@ -3054,18 +3179,10 @@ def _render_strategy_arrival_compact_chart(
 
 
 def _compact_strategy_label(strategy_key: object) -> str:
-    labels = {
-        "P1": "P1 전체 잔여 보정",
-        "P2": "P2 마감일 집중",
-        "P3": "P3 비마감일 보정",
-        "O1": "O1 버퍼 유지",
-        "O2": "O2 Stretch 전환",
-        "O3": "O3 품질 방어",
-        "N1": "N1 유지",
-        "N2": "N2 모니터링",
-        "N3": "N3 품질 점검",
-    }
-    return labels.get(str(strategy_key), str(strategy_key))
+    code = get_strategy_code(strategy_key)
+    if code in {"P1", "P2", "P3", "O1", "O2", "O3", "N1", "N2", "N3"}:
+        return f"{code} {get_strategy_label(code)}"
+    return str(strategy_key)
 
 
 def active_strategy_suffixes_for_status(target_status: object) -> tuple[str, str, str]:
@@ -3217,72 +3334,21 @@ def _render_input_data_page(
 
 
 def _render_forecast_detail_page(context: Mapping[str, Any]) -> None:
+    _render_forecast_strategy_detail_page(context)
+
+
+def _render_scenarios_detail_page(context: Mapping[str, Any]) -> None:
+    _render_forecast_strategy_detail_page(context)
+
+
+def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
     if _render_validation_guard(context):
         return
 
     validation_result = dict(context["validation_result"])
     scenario_df = _as_dataframe(context["scenario_df"])
-    selected_row = _as_series(context["selected_row"])
     next_close_result = dict(context["next_close_result"])
-
-    st.markdown(
-        render_section_header("KPI 요약", "월마감 예상, 목표 상태, 다음 마감 누적선을 확인합니다."),
-        unsafe_allow_html=True,
-    )
-    _render_kpis(validation_result, scenario_df, next_close_result, selected_row)
-
-    st.markdown(
-        render_section_header("F1/F2/F3 모델 결과", "기존 forecast pipeline의 결과를 모델별로 요약합니다."),
-        unsafe_allow_html=True,
-    )
-    model_rows = []
-    for forecast_key in ("F1", "F2", "F3"):
-        model_df = _scenario_df_for_forecast_key(scenario_df, forecast_key)
-        if not model_df.empty:
-            row = model_df.iloc[0]
-            model_rows.append(
-                {
-                    "forecast_model": forecast_key,
-                    "scenario_id": row.get("scenario_id"),
-                    "forecast_amount": row.get("forecast_amount"),
-                    "target_status": row.get("target_status"),
-                    "target_variance": row.get("target_variance"),
-                    "surplus_to_target": row.get("surplus_to_target"),
-                    "risk_level": row.get("risk_level"),
-                }
-            )
-    model_rows_df = pd.DataFrame(model_rows)
-    st.dataframe(_format_display_df(model_rows_df), hide_index=True, use_container_width=True)
-    _render_forecast_model_mini_chart(model_rows_df, selected_row, validation_result)
-    _render_historical_context_panel(
-        dict(context.get("historical_context") or {}),
-        scenario_df,
-        str(context.get("selected_scenario_id") or selected_row.get("scenario_id") or ""),
-    )
-
-    st.markdown(
-        render_section_header("CloseCycle / Daily revised target", "마감차수 흐름과 잔여 목표 보정 상세입니다."),
-        unsafe_allow_html=True,
-    )
     close_cycle_df = _as_dataframe(context.get("close_cycle_df"))
-    if close_cycle_df.empty:
-        st.info("마감차수 요약 데이터가 없습니다.")
-    else:
-        st.dataframe(_format_display_df(close_cycle_df), hide_index=True, use_container_width=True)
-    _render_target_or_strategy_table(
-        scenario_df,
-        str(context.get("selected_scenario_id") or ""),
-        _as_dataframe(context.get("revised_targets_df")),
-        show_all_forecast_models=True,
-    )
-    render_next_action_panel("forecast", context)
-
-
-def _render_scenarios_detail_page(context: Mapping[str, Any]) -> None:
-    if _render_validation_guard(context):
-        return
-
-    scenario_df = _as_dataframe(context["scenario_df"])
     forecast_choice = str(context.get("forecast_choice") or COMPARE_LABEL)
     provision_choice = str(context.get("provision_choice") or COMPARE_LABEL)
     selected_scenario_id = _render_selected_scenario_picker(
@@ -3301,24 +3367,305 @@ def _render_scenarios_detail_page(context: Mapping[str, Any]) -> None:
     )
     revised_targets_df = _as_dataframe(provision_result.get("allocation_by_day"))
 
-    _render_strategy_arrival_inline_summary(scenario_df, selected_scenario_id)
+    st.markdown(
+        '<section class="forecast-strategy-board">'
+        '<div class="forecast-strategy-board__eyebrow">Unified forecast strategy board</div>'
+        "<h2>예측 · 전략 통합 보드</h2>"
+        "<p>F1/F2/F3 예측과 P/O/N 운영전략을 같은 화면에서 비교합니다. "
+        "상단은 현재 선택 시나리오 기준 결론, 하단은 전체 시나리오 비교입니다.</p>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+    _render_forecast_strategy_summary_board(
+        validation_result,
+        next_close_result,
+        selected_scenario_id,
+        selected_row,
+    )
+
+    st.markdown(
+        render_section_header(
+            "F1/F2/F3 모델 비교",
+            "예측모델 간 월말 예상 차이만 compact하게 비교합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    model_rows_df = _build_forecast_strategy_model_rows(scenario_df)
+    if model_rows_df.empty:
+        st.info("F1/F2/F3 모델 비교 데이터가 없습니다.")
+    else:
+        display_columns = [
+            "forecast_model",
+            "model_name",
+            "expected_month_end_amount",
+            "target_status",
+            "target_variance",
+            "risk_level",
+        ]
+        st.dataframe(
+            _format_display_df(model_rows_df.loc[:, display_columns]),
+            hide_index=True,
+            use_container_width=True,
+        )
+        _render_forecast_model_mini_chart(model_rows_df, selected_row, validation_result)
+
+    st.markdown(
+        render_section_header(
+            "선택 시나리오와 운영 판단판",
+            "선택값을 바꾸면 추천 행과 상세 분석이 같은 화면에서 함께 갱신됩니다.",
+        ),
+        unsafe_allow_html=True,
+    )
     _render_strategy_reference_sections(
         scenario_df,
         selected_scenario_id,
         selected_row.get("target_status"),
     )
-    _render_historical_context_panel(
-        dict(context.get("historical_context") or {}),
-        scenario_df,
-        selected_scenario_id,
-    )
-    with st.expander("선택 전략 상세표", expanded=False):
-        _render_target_or_strategy_table(scenario_df, selected_scenario_id, revised_targets_df)
-    with st.expander("선택 시나리오 상세값", expanded=False):
+    _render_scenario_operation_matrix(scenario_df, selected_scenario_id)
+
+    with st.expander("상세 차트와 잔여목표", expanded=False):
+        _render_strategy_arrival_inline_summary(scenario_df, selected_scenario_id)
+        st.markdown("**CloseCycle / Daily revised target**")
+        if close_cycle_df.empty:
+            st.info("마감차수 요약 데이터가 없습니다.")
+        else:
+            st.dataframe(_format_display_df(close_cycle_df), hide_index=True, use_container_width=True)
+        _render_target_or_strategy_table(
+            scenario_df,
+            selected_scenario_id,
+            revised_targets_df,
+            show_all_forecast_models=True,
+        )
+        _render_forecast_strategy_chart_tabs(
+            _as_dataframe(context["df"]),
+            scenario_df,
+            selected_scenario_id,
+            selected_row,
+            revised_targets_df,
+            close_cycle_df,
+            next_close_result,
+            validation_result,
+            str(context["metric"]),
+            context["as_of_date"],
+            dict(context["config"]),
+        )
+    with st.expander("원본 ScenarioGrid", expanded=False):
         _render_selected_scenario_summary(selected_scenario_id, selected_row)
-    with st.expander("ScenarioGrid 전체 원본", expanded=False):
         st.dataframe(_format_display_df(scenario_df), use_container_width=True)
-    render_next_action_panel("scenarios", context)
+    with st.expander("과거 이력 / Backtest 참고", expanded=False):
+        _render_historical_context_panel(
+            dict(context.get("historical_context") or {}),
+            scenario_df,
+            selected_scenario_id,
+        )
+        _render_forecast_history_backtest_tab(
+            scenario_df,
+            str(context["metric"]),
+            context["as_of_date"],
+            audit_readonly=bool(context.get("audit_readonly", False)),
+        )
+
+    next_action_context = dict(context)
+    next_action_context.update(
+        {
+            "selected_scenario_id": selected_scenario_id,
+            "selected_row": selected_row,
+            "revised_targets_df": revised_targets_df,
+        }
+    )
+    render_next_action_panel("forecast_strategy", next_action_context)
+
+
+def _render_forecast_strategy_summary_board(
+    validation_result: Mapping[str, Any],
+    next_close_result: Mapping[str, Any],
+    selected_scenario_id: str,
+    selected_row: pd.Series,
+) -> None:
+    target_status = selected_row.get("target_status")
+    strategy_code = get_strategy_code(
+        _scenario_strategy_source(selected_row.to_dict()) or selected_scenario_id
+    )
+    strategy_label = get_strategy_label(strategy_code)
+    strategy_group = get_strategy_group(strategy_code)
+    summary_items = (
+        ("목표 상태", _localize_display_value(target_status), "현재 선택 시나리오 기준"),
+        ("월마감 예상 실적", format_amount(selected_row.get("forecast_after_provision")), selected_scenario_id),
+        ("목표 대비 차이", _format_signed_amount(selected_row.get("target_variance")), "공식 월 목표 대비"),
+        ("초과 예상분", format_amount(selected_row.get("surplus_to_target")), "초과달성 운영 버퍼"),
+        (
+            "다음 마감 누적선 필요실적",
+            format_amount(next_close_result.get("required_to_recover_next_close_cum")),
+            _format_date(next_close_result.get("next_close_date")),
+        ),
+        ("운영모드", _operation_mode_label(target_status), "P/O/N 전략군 판단"),
+        ("권장 전략", f"{strategy_code} {strategy_label}", strategy_group),
+        (
+            "다음 액션",
+            _home_next_action_text(target_status, validation_result, next_close_result),
+            "보고 전 확인",
+        ),
+    )
+    cards_html = "".join(
+        '<div class="unified-decision-strip__item">'
+        f"<span>{escape(str(label))}</span>"
+        f"<strong>{escape(str(value))}</strong>"
+        f"<small>{escape(str(note))}</small>"
+        "</div>"
+        for label, value, note in summary_items
+    )
+    st.markdown(
+        '<section class="unified-decision-strip strategy-recommendation-pulse">'
+        f"{cards_html}"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _build_forecast_strategy_model_rows(scenario_df: pd.DataFrame) -> pd.DataFrame:
+    model_rows = []
+    for forecast_key in ("F1", "F2", "F3"):
+        model_df = _scenario_df_for_forecast_key(scenario_df, forecast_key)
+        if model_df.empty:
+            continue
+        row = model_df.iloc[0]
+        expected_amount = _first_finite_amount(
+            row.get("forecast_amount"),
+            row.get("forecast_after_provision"),
+        )
+        model_rows.append(
+            {
+                "forecast_model": forecast_key,
+                "model_name": FORECAST_MODEL_DEFINITIONS.get(forecast_key, {}).get(
+                    "name",
+                    forecast_key,
+                ),
+                "expected_month_end_amount": expected_amount,
+                "forecast_amount": expected_amount,
+                "target_status": row.get("target_status"),
+                "target_variance": row.get("target_variance"),
+                "risk_level": row.get("risk_level"),
+            }
+        )
+    return pd.DataFrame(model_rows)
+
+
+SCENARIO_OPERATION_COLUMNS = (
+    "scenario",
+    "forecast_model",
+    "target_status",
+    "strategy_code",
+    "strategy_label",
+    "strategy_group",
+    "expected_month_end_amount",
+    "target_variance",
+    "surplus_to_target",
+    "recommended_action",
+    "risk_note",
+    "recommended",
+)
+
+
+def build_scenario_operation_matrix(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None = None,
+) -> pd.DataFrame:
+    """Return display-ready ScenarioGrid rows without changing calculations."""
+    if scenario_df.empty:
+        return pd.DataFrame(columns=SCENARIO_OPERATION_COLUMNS)
+
+    rows: list[dict[str, object]] = []
+    selected_id = str(selected_scenario_id or "")
+    for _, row in scenario_df.iterrows():
+        scenario_id = str(row.get("scenario_id") or row.get("scenario") or "")
+        strategy_source = _scenario_strategy_source(row)
+        strategy_code = get_strategy_code(strategy_source or scenario_id)
+        rows.append(
+            {
+                "scenario": scenario_id,
+                "forecast_model": row.get("forecast_model"),
+                "target_status": row.get("target_status"),
+                "strategy_code": strategy_code,
+                "strategy_label": get_strategy_label(strategy_code),
+                "strategy_group": get_strategy_group(strategy_code),
+                "expected_month_end_amount": _first_finite_amount(
+                    row.get("forecast_after_provision"),
+                    row.get("forecast_amount"),
+                ),
+                "target_variance": row.get("target_variance"),
+                "surplus_to_target": row.get("surplus_to_target"),
+                "recommended_action": row.get("recommended_action"),
+                "risk_note": _scenario_risk_note(row),
+                "recommended": "추천" if scenario_id == selected_id else "",
+            }
+        )
+    return pd.DataFrame(rows, columns=SCENARIO_OPERATION_COLUMNS)
+
+
+def _render_scenario_operation_matrix(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+) -> None:
+    st.markdown(
+        render_section_header(
+            "운영 판단판",
+            "전략 코드는 유지하되, 기본 표는 한국어 전략명과 전략군을 우선 표시합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    matrix = build_scenario_operation_matrix(scenario_df, selected_scenario_id)
+    if matrix.empty:
+        st.info("시나리오 운영 판단판에 표시할 데이터가 없습니다.")
+        return
+
+    st.markdown(
+        '<div class="scenario-operation-note">'
+        "추천 행은 현재 선택된 시나리오 기준입니다. 원본 ScenarioGrid는 아래 접힌 영역에서 확인합니다."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    display = _format_display_df(matrix)
+    recommended_label = _display_column_label("recommended")
+
+    def highlight_recommended(row: pd.Series) -> list[str]:
+        is_recommended = str(row.get(recommended_label, "")) == "추천"
+        style = "background-color: #eef6f4; font-weight: 700;" if is_recommended else ""
+        return [style] * len(row)
+
+    st.dataframe(
+        display.style.apply(highlight_recommended, axis=1),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
+def _scenario_strategy_source(row: Mapping[str, object]) -> object:
+    for key in (
+        "overachievement_strategy",
+        "provision_strategy",
+        "neutral_strategy",
+        "strategy_id",
+        "strategy_code",
+        "scenario_id",
+    ):
+        value = row.get(key)
+        if not _is_missing(value) and str(value):
+            return value
+    return ""
+
+
+def _scenario_risk_note(row: Mapping[str, object]) -> str:
+    for key in ("risk_note", "comment", "warnings", "recommended_action"):
+        value = row.get(key)
+        if _is_missing(value):
+            continue
+        if isinstance(value, (list, tuple, set)):
+            text = ", ".join(str(item) for item in value if str(item))
+        else:
+            text = str(value)
+        if text.strip():
+            return text.strip()
+    return "특이 리스크 없음"
 
 
 def _render_report_detail_page(context: Mapping[str, Any]) -> None:
@@ -3423,6 +3770,21 @@ def _render_history_detail_page(context: Mapping[str, Any]) -> None:
     render_next_action_panel("history", context)
 
 
+def _render_excel_freshness_badge(report_path: Path) -> None:
+    stat = report_path.stat()
+    generated_at = pd.Timestamp.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown(
+        '<section class="excel-freshness-badge">'
+        '<div>'
+        '<div class="excel-freshness-badge__label">Excel freshness</div>'
+        f"<strong>{escape(report_path.name)}</strong>"
+        '</div>'
+        f"<span>생성/수정시각 {escape(generated_at)} · {stat.st_size:,} bytes</span>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
     if _render_validation_guard(context):
         return
@@ -3459,6 +3821,7 @@ def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
     if latest_report_path is None:
         st.info("기존 daily_report Excel 리포트가 없어 생성 필요 상태입니다.")
     else:
+        _render_excel_freshness_badge(latest_report_path)
         st.markdown(render_download_card(latest_report_path.name), unsafe_allow_html=True)
         st.download_button(
             "기존 Excel 리포트 다운로드",
@@ -3513,6 +3876,7 @@ def _render_audit_detail_page(context: Mapping[str, Any]) -> None:
     st.write("- Auth Gate: 로컬 운영 기준이며, 외부 배포 전 보안 복원 예정입니다.")
     st.write("- `.streamlit/secrets.toml`은 로컬 전용이며 감리/배포 패키지에 포함하지 않습니다.")
     st.write("- 실데이터, 고객/계약/개인 식별정보의 외부 공개는 금지됩니다.")
+    st.warning(SECURITY_WARNING_TEXT)
 
     st.markdown("**현재 검증 로그**")
     for label, path in (
@@ -3550,23 +3914,11 @@ def _render_validation_guard(context: Mapping[str, Any]) -> bool:
 
 
 def _scenario_grid_column_check_df(scenario_df: pd.DataFrame) -> pd.DataFrame:
-    required_columns = (
-        "target_status",
-        "target_variance",
-        "surplus_to_target",
-        "strategy_type",
-        "overachievement_strategy",
-        "stretch_uplift",
-        "revised_monthly_target",
-        "remaining_surplus_buffer",
-        "minimum_remaining_to_hit_target",
-        "relief_amount",
-        "recommended_action",
-    )
+    export_frame = prepare_scenario_grid_export_frame(scenario_df)
     return pd.DataFrame(
         {
-            "column": required_columns,
-            "present": [column in scenario_df.columns for column in required_columns],
+            "column": SCENARIO_GRID_REQUIRED_COLUMNS,
+            "present": [column in export_frame.columns for column in SCENARIO_GRID_REQUIRED_COLUMNS],
         }
     )
 
@@ -4580,6 +4932,7 @@ def _inject_app_styles() -> None:
         unsafe_allow_html=True,
     )
     st.markdown(get_pace_check_css(), unsafe_allow_html=True)
+    inject_global_styles(st)
     st.markdown(
         """
         <style>
@@ -7512,7 +7865,7 @@ def build_report_glossary_df() -> pd.DataFrame:
             rows.append(
                 {
                     "구분": group,
-                    "코드": _localize_display_value(code),
+                    "코드": str(code),
                     "정의": definition,
                 }
             )
@@ -7539,10 +7892,7 @@ def build_selected_scenario_explanation(
     """Return a concise, non-duplicative summary for the selected scenario."""
     forecast_key, strategy_key = _split_scenario_id(scenario_id)
     forecast_name = FORECAST_MODEL_DEFINITIONS.get(forecast_key, {}).get("name", forecast_key)
-    strategy_name = SCENARIO_STRATEGY_DEFINITIONS.get(strategy_key, {}).get(
-        "name",
-        strategy_key,
-    )
+    strategy_name = get_strategy_label(strategy_key)
     risk_level = str(selected_row.get("risk_level", "계산 불가"))
     status = str(selected_row.get("status", "계산 불가"))
     strategy_type = str(selected_row.get("strategy_type", PROVISION))
@@ -7649,10 +7999,7 @@ def format_scenario_option_label(scenario_id: str) -> str:
         "name",
         "정의 없음",
     )
-    strategy_name = SCENARIO_STRATEGY_DEFINITIONS.get(strategy_key, {}).get(
-        "name",
-        "정의 없음",
-    )
+    strategy_name = get_strategy_label(strategy_key) or "정의 없음"
     return f"{scenario_id} - {forecast_key} {forecast_name} / {strategy_key} {strategy_name}"
 
 
@@ -7847,7 +8194,7 @@ def build_excel_report_bytes(
         report_text,
         overwrite=True,
     )
-    return saved_path.read_bytes(), report_name
+    return saved_path.read_bytes(), saved_path.name
 
 
 def load_forecast_history_for_app(path: str | Path | None = None) -> pd.DataFrame:
@@ -9430,6 +9777,87 @@ def _render_target_or_strategy_table(
         hide_index=True,
         use_container_width=True,
     )
+
+
+def _render_forecast_strategy_chart_tabs(
+    df: pd.DataFrame,
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str,
+    selected_row: pd.Series,
+    revised_targets_df: pd.DataFrame,
+    close_cycle_df: pd.DataFrame,
+    next_close_result: dict[str, Any],
+    validation_result: dict[str, Any],
+    metric: str,
+    as_of_date: object,
+    config: dict[str, Any],
+) -> None:
+    _ = selected_row, next_close_result, validation_result
+    st.subheader("시각화 상세")
+    scenario_tab, target_tab, close_cycle_tab = st.tabs(
+        ["시나리오별 예상", "잔여 목표/전략 수준", "마감차수 흐름"]
+    )
+
+    with scenario_tab:
+        scenario_chart_data = build_scenario_chart_data(scenario_df)
+        if scenario_chart_data.empty:
+            st.info("시나리오 차트 데이터 없음")
+        else:
+            _render_visual_metric_definitions(
+                ("daily_forecast_cum", "daily_target_cum", "daily_achievement_rate")
+            )
+            _render_chart_reading_guide("scenario_daily_progress")
+            _render_forecast_model_scenario_tabs(
+                df,
+                scenario_df,
+                as_of_date,
+                metric,
+                config,
+                selected_scenario_id,
+            )
+
+            with st.expander("시나리오 숫자표", expanded=False):
+                value_matrix = build_scenario_value_matrix(scenario_df)
+                st.dataframe(value_matrix.map(format_amount), use_container_width=True)
+
+    with target_tab:
+        st.caption(f"선택 시나리오: {selected_scenario_id}")
+        target_chart_data = build_remaining_target_chart_data(revised_targets_df)
+        if target_chart_data.empty:
+            _render_strategy_level_visuals(scenario_df, selected_scenario_id)
+        else:
+            _render_visual_metric_definitions(
+                ("original_target", "uplift", "revised_target", "cap_target")
+            )
+            _render_chart_reading_guide("target_stack")
+            _render_remaining_target_stack_chart(revised_targets_df)
+
+    with close_cycle_tab:
+        close_cycle_bar_columns = ("target_sum", "actual_sum")
+        close_cycle_cumulative_amount_columns = ("target_cum", "actual_cum")
+        close_cycle_rate_columns = ("achievement_rate",)
+        close_cycle_cumulative_rate_columns = ("cumulative_achievement_rate",)
+        _render_visual_metric_definitions(
+            (
+                *close_cycle_bar_columns,
+                *close_cycle_cumulative_amount_columns,
+                *close_cycle_rate_columns,
+                *close_cycle_cumulative_rate_columns,
+            )
+        )
+        close_cycle_chart_data = build_close_cycle_chart_data(close_cycle_df)
+        if close_cycle_chart_data.empty:
+            st.info("마감 사이클 차트 데이터 없음")
+        else:
+            _render_chart_reading_guide("close_cycle_amount")
+            _render_grouped_bar_chart(close_cycle_chart_data, close_cycle_bar_columns)
+            st.markdown("**CloseCycle 누적 목표선/누적 실적**")
+            st.caption("입력표에 있는 마감차수 row만 사용해 누적 목표선과 누적 실적을 함께 표시합니다.")
+            _render_line_chart(close_cycle_chart_data, close_cycle_cumulative_amount_columns)
+            _render_chart_reading_guide("close_cycle_rate")
+            _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
+            st.markdown("**누적 달성률**")
+            _render_rate_ratio_line_chart(close_cycle_chart_data, close_cycle_cumulative_rate_columns)
 
 
 def _render_visuals(
@@ -11604,7 +12032,9 @@ def _format_display_df(df: pd.DataFrame) -> pd.DataFrame:
         return result
 
     for column in result.columns:
-        if column in AMOUNT_COLUMNS:
+        if column in TECHNICAL_CODE_COLUMNS:
+            result[column] = result[column].map(lambda value: "" if _is_missing(value) else str(value))
+        elif column in AMOUNT_COLUMNS:
             result[column] = result[column].map(format_amount)
         elif column in RATE_COLUMNS:
             result[column] = result[column].map(format_rate)
@@ -11627,7 +12057,8 @@ def _format_named_value(name: object, value: object) -> object:
 
 
 def _display_column_label(column: object) -> str:
-    return DISPLAY_COLUMN_LABELS.get(str(column), str(column))
+    text = str(column)
+    return DISPLAY_COLUMN_LABELS.get(text, get_metric_label(text))
 
 
 def _localize_display_value(value: object) -> object:
@@ -11639,14 +12070,18 @@ def _localize_display_value(value: object) -> object:
         localized = [format_validation_message(item) for item in value]
         return ", ".join(str(item) for item in localized if str(item))
     text = str(value)
+    if text in {"UNDER_TARGET", "ON_TARGET", "OVER_TARGET", "UNKNOWN_TARGET_STATUS"}:
+        return get_status_label(text)
+    strategy_label = get_strategy_label(text)
+    if strategy_label != text:
+        return strategy_label
     return DISPLAY_VALUE_LABELS.get(text, value)
 
 
 def _operation_mode_label(target_status: object) -> object:
     if _is_missing(target_status):
         return "계산 불가"
-    text = str(target_status)
-    return TARGET_STATUS_OPERATION_MODE_LABELS.get(text, _localize_display_value(text))
+    return get_operation_mode(target_status)
 
 
 def _format_date(value: object) -> str:

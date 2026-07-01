@@ -42,6 +42,8 @@ Excel 파일을 `openpyxl.load_workbook`으로 열 수 없으면 `invalid`로 �
 
 리포트 워크북은 `Summary`, `ScenarioGrid`, `DailyRevisedTargets`, `CloseCycle`, `Validation`, `ReportText` 시트가 모두 있으면 latest로 분류한다. `ForecastHistory`, `FinalActuals`, `BacktestSummary`, `ModelWeights`, `ConfidenceBand`, `Insights` 시트가 있으면 최신 고도화 산출물로 볼 수 있다.
 
+D03 이후 `ScenarioGrid`는 계산용 원본 컬럼과 표시/공유용 컬럼을 함께 가진다. 최신 공유본의 필수 표시 컬럼은 `scenario`, `forecast_model`, `model_name`, `expected_month_end_amount`, `target_status`, `target_variance`, `surplus_to_target`, `strategy_type`, `strategy_code`, `overachievement_strategy`, `strategy_label`, `strategy_group`, `stretch_uplift`, `revised_monthly_target`, `remaining_surplus_buffer`, `minimum_remaining_to_hit_target`, `relief_amount`, `recommended_action`, `risk_note`이다.
+
 단, D02 정리 기준에서 구버전 산출물로 식별된 `daily_report_*_20260602.xlsx`, `daily_report_sales_20260604.xlsx`는 보존용 old_format으로 분류한다.
 
 입력 템플릿은 `date`, `day_name`, `business_day_no`, `is_close_day`, `close_type`, `sales_target_daily`, `recognized_target_daily`, `sales_actual_cum`, `recognized_actual_cum`, `memo` 헤더가 있으면 latest로 분류한다. `day_name`은 표시용이며 마감일 판정에는 사용하지 않는다.
@@ -49,3 +51,5 @@ Excel 파일을 `openpyxl.load_workbook`으로 열 수 없으면 `invalid`로 �
 ## 운영 공유 원칙
 
 운영 공유와 감리 제출에는 `outputs/latest/`의 최신 산출물만 사용한다. `archive_old_format`과 `archive_invalid`는 보존과 원인 추적용이며 기본 공유 대상이 아니다.
+
+Public Streamlit 또는 외부 공개 URL에는 실제 영업실적을 업로드하지 않는다. 실데이터는 Private/사내망/권한 통제 환경에서만 사용한다. `.streamlit/secrets.toml`, `.env`, `*.key`, `*secret*`, `*secrets*` 파일은 감리 제출 패키지와 운영 공유 산출물에 포함하지 않는다.

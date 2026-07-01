@@ -1,204 +1,232 @@
-# L3 Internal Pilot Plan
+# R03 L3 Internal Pilot Plan
 
-This plan defines the L3 internal pilot for the input-driven month-end sales
-forecasting tool. The pilot is limited to 1 to 3 named users and is intended to
-prove that daily forecast history, final actual storage, Backtest review, report
-generation, and security controls are ready for controlled business use.
+This document defines the limited L3 internal pilot plan for the input-driven
+month-end sales forecasting tool.
 
-## Pilot Objective
+## R03.1A LOCKE Launch Values
 
-Validate that a small operating group can use the Streamlit app and Excel
-report workflow every business day without breaking the existing forecast
-models, provision strategies, over-target strategies, or Gate Runner audit
-rules.
+The following values are fixed from the R03.1A `LOCKE_DECISION_BLOCK`.
+
+| Field | Value |
+| --- | --- |
+| Pilot users | LOCKE only. Optional internal reviewer: maximum 1, name recorded only after separate approval. |
+| Pilot period | 2026-06-11 to 2026-06-17 KST |
+| Access method | Current Streamlit URL + password gate. Sample / anonymous data only. Public Streamlit real-data use prohibited. |
+| Password owner | LOCKE |
+| Sample dataset | 1 `UNDER_TARGET` sample, 1 `ON_TARGET` sample, 1 `OVER_TARGET` sample. No real customer names, contract numbers, phone numbers, addresses, or real sales data. |
+| Feedback owner | LOCKE |
+| Go/no-go owner | LOCKE |
+| Data scope | sample / anonymous only |
+| Real data allowed | no for L3; restricted aggregate real-data allowed only in L4-Shadow under LOCKE approval |
+| Public Streamlit real-data use allowed | no |
+
+All required launch values are now recorded. The launch approval final decision
+is `CONDITIONAL_GO` because the controlled L3 pilot may run only under
+sample/anonymous data restrictions and recorded known warnings. L4-Production,
+public broad real-data use, and official real-data operation remain prohibited.
+R04B separately defines L4-Shadow as restricted internal aggregate real-data
+shadow validation under LOCKE approval.
+
+## R04B Stage Update
+
+R04B reframes the operating path into three stages:
+
+- L3: sample / anonymous pilot.
+- L4-Shadow: restricted internal aggregate real-data shadow validation.
+- L4-Production: official production operation.
+
+The L3 pilot described in this document remains sample / anonymous only.
+L4-Shadow may use only LOCKE-approved aggregate inputs through the current input
+columns, with invited internal users, password gate, no external sharing, no
+identifiers in `memo` or file names, and no replacement of official reporting.
+
+R04A deploy source clean local commit:
+`5be44e16b31da425d0e6fab326781a01581af25e`.
+
+## 1. Pilot Purpose
+
+The L3 pilot validates whether the current release is fit for controlled
+business-facing internal use without changing formulas, calculation modules, or
+test expectations.
 
 The pilot must confirm:
 
-- Daily forecast results can be saved without missing snapshots.
-- Confirmed month-end actuals can be stored after close.
-- Backtest results compare forecast history against final actuals.
-- F1/F2/F3 model-level error rates are visible and usable.
-- Dynamic model weighting preparation data can be reviewed without changing
-  existing formulas.
-- Confidence-band and visualization-ready data are generated.
-- Existing P1/P2/P3 and O1/O2/O3 strategy behavior remains available.
-- Real sensitive information is not introduced into tests, samples, reports, or
-  pilot notes.
+- Business users can follow the flow from input, validation, forecast, scenario
+  review, report text, and Excel download.
+- Users understand the practical meaning of O1/O2/O3 over-target strategies and
+  P1/P2/P3 under-target response strategies.
+- KPI values, `target_status`, `target_variance`, `surplus_to_target`, and the
+  next-close cumulative-line required amount can be interpreted correctly.
+- Backtest and forecast history provide useful operating evidence.
+- The pilot can run with sample or anonymous data only, with no sensitive
+  information exposed.
 
-## Scope
+## 2. Pilot Scope
 
-In scope:
+Scope: L3 Internal Pilot.
 
-- Daily input-file operation.
-- Streamlit execution and screen review.
-- Forecast history save operation.
-- Report text generation.
-- Excel report download and review.
-- Month-end final actual entry.
-- Backtest execution and model-error review.
-- Weekly feedback collection for screen, report, and data-quality improvement.
+Allowed data scope:
 
-Out of scope:
-
-- Formula changes to F1/F2/F3.
-- Removal or simplification of P1/P2/P3, O1/O2/O3 scenarios.
-- Automatic close-day inference from weekday, date pattern, or `day_name`.
-- Creation of dates that are not already present in the input table.
-- Modification of the original source input file.
-- Use of customer names, phone numbers, addresses, contract numbers, resident
-  registration numbers, or other sensitive identifiers.
-
-## Release Level Boundaries
-
-- L3: sample / anonymous pilot. The L3 pilot may use sample data or anonymous
-  aggregate operating inputs only.
-- L4-Shadow: restricted internal aggregate real-data shadow validation. This is
-  not approved unless a separate approval record exists and access remains
-  restricted to invited internal users only.
-- L4-Production: official production operation, not approved.
-- app result does not replace official reporting. Official reporting remains
-  the controlling source for business decisions and external communication.
-- memo identifiers prohibited. Memo fields, notes, issue records, and reports
-  must not contain customer, contract, account, personal, or contact
+- `sample` data.
+- `anonymous` data.
+- Aggregated operating amounts with no customer, contract, personal, or account
   identifiers.
-- broad public real-data use prohibited. Public or broadly shared Streamlit
-  real-data operation is outside the approved L3/L4-Shadow scope.
-- `final_actual` is final_actual shadow aggregate only during any approved
-  L4-Shadow validation.
 
-## Pilot Period
+Not allowed:
 
-Minimum duration: 2 weeks.
+- Real sales data in L3.
+- Customer names, phone numbers, addresses, contract numbers, resident
+  registration numbers, or any other sensitive identifiers.
+- Real business data in a public broad Streamlit deployment.
+- Any implication that Public Streamlit is approved for broad real-data use.
+- Formula changes to F1/F2/F3, P1/P2/P3, or O1/O2/O3.
+- Changes to `app.py`, `src`, tests, config, deploy source, or existing output
+  artifacts during R03.
 
-Recommended duration: 1 full month, from the first available business day of a
-target month through the post-close Backtest review.
+The pilot is limited to approved internal users only.
 
-If the first pilot starts mid-month, run at least 2 weeks of daily operation and
-continue through the next month-end when possible so final actuals and Backtest
-can be reviewed with a complete close cycle.
+## 3. Pilot Participants
 
-## Pilot Users
+Pilot access is limited to LOCKE by default. LOCKE may add no more than one
+internal reviewer, and the reviewer name must be recorded only after separate
+approval.
 
-The pilot is restricted to the following user group:
-
-| Role | User | Responsibility |
+| Role | Participant | Responsibility |
 | --- | --- | --- |
-| Pilot owner | LOCKE | Owns daily operation, issue triage, and final go/no-go recommendation. |
-| Sales operations user | 1 named sales management person | Updates the working input file and verifies daily business context. |
-| Leader / report recipient | 1 named leader or report recipient | Reviews report usefulness, decision value, and rollout readiness. |
+| Owner | LOCKE | Owns pilot go/no-go, scope control, issue triage, and evidence review. |
+| Operator | LOCKE | Runs the app with sample or anonymous input and records daily results. |
+| Reviewer | Optional approved internal reviewer, maximum 1 | Reviews KPI, scenario, report, Excel, Backtest, and feedback quality only after separate approval. |
+| Observer | None by default | May be the optional approved reviewer only if separately approved. |
+| Password owner | LOCKE | Owns pilot password handling and rotation confirmation before access opens. |
+| Feedback owner | LOCKE | Collects and summarizes pilot feedback without sensitive information. |
 
-Do not expand access during the L3 pilot unless a new approval note is added to
-the pilot record.
+Access must not be expanded without an explicit pilot approval note.
 
-## Operating Guardrails
+## 4. Pilot Period
 
-- Determine close days only from the `is_close_day` column.
-- Use `day_name` only as a display label.
-- Do not use weekday logic, weekday names, date patterns, or calendar inference
-  to decide close days.
-- Use only dates already present in the input table.
-- Keep the original source input file unchanged. Operate on a controlled working
-  copy.
-- Keep outputs, downloaded reports, and audit notes in the approved pilot
-  folder only.
-- Keep access to invited internal users only.
-- Use aggregate operating notes only. Do not record sensitive identifiers.
-- Treat F2/F3 fallback behavior as an operating observation, not as a reason to
-  change formulas during the pilot.
+Pilot period: 2026-06-11 to 2026-06-17 KST.
 
-## Daily Operating Procedure
+Fixed duration: 7 calendar days.
 
-Run once per operating day during the pilot.
+Minimum case coverage:
 
-| Step | Activity | Expected evidence |
-| --- | --- | --- |
-| 1 | Update the working input file. | Required columns exist, actuals are populated through selected `as_of_date`, and future actuals are blank unless intentionally maintained as defaults. |
-| 2 | Run Streamlit. | App opens for the approved pilot users. |
-| 3 | Select the base date / `as_of_date`. | Selected date exists in the input table. |
-| 4 | Review F1/F2/F3. | Forecast rows are visible, and fallback notes are understood when shown. |
-| 5 | Review `target_status`. | Status is interpreted as below target, near target, over target, or equivalent current app status. |
-| 6 | Review P/O/N strategy results. | P1/P2/P3, O1/O2/O3, or normal/no-gap behavior is visible as applicable. |
-| 7 | Save forecast history. | Forecast snapshot is appended to `outputs/history/forecast_history.csv` or the configured history path. |
-| 8 | Save report text and Excel report. | Report text is reviewed, Excel is downloaded, opened, and stored in the approved pilot folder. |
+- All 3 approved sample input cases must be exercised.
+- Coverage must include 1 `UNDER_TARGET` sample, 1 `ON_TARGET` sample, and 1
+  `OVER_TARGET` sample.
 
-Daily completion rule:
+The pilot period must be short enough to remain controlled, but long enough to
+capture validation behavior, report interpretation, Excel export, forecast
+history, and Backtest review.
 
-- A day is complete only when forecast history is saved and the report artifact
-  is reviewed.
-- If the app blocks calculation with validation errors, the daily run remains
-  open until the working input file is corrected and the run is repeated.
-- If a save or export issue occurs, record the issue with root-cause class and
-  owner before the next pilot day.
+## 5. Success Criteria
 
-## Weekly Operating Procedure
+The pilot may be considered successful at L3 only when all of the following are
+true:
 
-Run once per week during the pilot.
+- The input file can be prepared by the operator using sample or anonymous data.
+- Validation errors, if raised, can be understood and corrected by the operator.
+- KPI values, scenario output, and report text can be interpreted without
+  calculation ambiguity.
+- `target_status` is understood as under-target, on/near-target, or
+  over-target.
+- P1/P2/P3 and O1/O2/O3 strategy meanings are understood in operating terms.
+- The Excel report can be downloaded, opened, and shared only inside the
+  approved pilot group.
+- Forecast history or Backtest flow is understood.
+- No sensitive information is entered, displayed, saved, exported, or included
+  in feedback.
 
-| Step | Activity | Expected evidence |
-| --- | --- | --- |
-| 1 | Review forecast history. | Daily snapshots exist for every intended pilot operating day. |
-| 2 | Review accumulated error signals. | Backtest or provisional error summary is reviewed where final actuals are available. |
-| 3 | Collect screen and report improvement requests. | Requests are grouped as usability, wording, visualization, report, data, or export. |
-| 4 | Check data gaps. | Missing actuals, missing close-day markers, invalid targets, and duplicate history attempts are documented. |
+## 6. Stop Criteria
 
-Weekly review notes should separate:
+Stop the pilot and record a no-go or incident when any of the following occurs:
 
-- Must-fix before broader rollout.
-- Nice-to-have improvement.
-- Training or runbook clarification.
-- Formula-change request, which must be escalated rather than implemented inside
-  this pilot step.
+- Any attempt to upload real sales data during L3.
+- Any potential exposure of sensitive information.
+- Calculation result mismatch or unexplained KPI inconsistency.
+- Excel download failure that cannot be resolved by retrying normal operation.
+- Streamlit access failure for approved pilot users.
+- Access by an unauthorized user.
+- Report text that could mislead a business decision.
+- Any request to change formulas, loosen tests, or infer close days from weekday,
+  date pattern, or `day_name` during the pilot.
 
-## Month-End Procedure
+## 7. Required Pilot Flow
 
-Run after the month-end result is confirmed.
+Each pilot run should cover the following flow:
 
-| Step | Activity | Expected evidence |
-| --- | --- | --- |
-| 1 | Enter `final_actual`. | Aggregate final actual is stored by `target_month + metric`. |
-| 2 | Run Backtest. | Forecast history joins to final actual rows for the same month and metric. |
-| 3 | Review model-level error rates. | F1/F2/F3 absolute error and error-rate summary is available. |
-| 4 | Write next-month improvement notes. | Recommendations identify data-quality, UI/report, process, and model-weighting preparation items. |
+1. Select a sample or anonymous input case.
+2. Confirm `is_close_day` is the only close-day decision field.
+3. Confirm `day_name` is display-only.
+4. Upload the input file or select the sample.
+5. Review validation messages.
+6. Review KPI and target status.
+7. Review `target_variance` and `surplus_to_target`.
+8. Review next-close cumulative-line required amount.
+9. Review Scenario Grid.
+10. Review P1/P2/P3 or O1/O2/O3 strategy output.
+11. Review report text.
+12. Download and inspect the Excel report.
+13. Confirm whether forecast history was saved.
+14. Review Backtest tab behavior.
+15. Complete the pilot feedback form.
 
-Month-end review must not change F1/F2/F3 formulas. If the pilot evidence
-indicates a formula change is needed, record it as an escalation item for a
-separate approved task.
+## 8. L4-Shadow And L4-Production Transition Conditions
 
-## Pilot Issue Classification
+L4-Shadow transition is allowed only as restricted internal aggregate
+validation when all of the following are true:
 
-Classify each issue before attempting a fix.
+- Deploy source clean local commit is recorded.
+- Restricted internal invited users only.
+- Password gate is maintained.
+- Current input columns only.
+- Aggregate target and cumulative performance values only.
+- Aggregate monthly final_actual values only under LOCKE ownership.
+- No identifiers in `memo`, file names, feedback, screenshots, or outputs.
+- App results do not replace official operating judgment or reporting.
+- Public broad real-data use remains prohibited.
 
-| Class | Examples | Default action |
-| --- | --- | --- |
-| Data quality | Missing required column, blank actual through `as_of_date`, invalid numeric value | Correct the working input file and re-run. |
-| Close-day setup | Incorrect `is_close_day`, missing close type | Correct only the input marker from approved business calendar evidence. |
-| History save | Duplicate snapshot, missing save, invalid configured path | Confirm existing history first, then retry or escalate. |
-| Backtest | No final actual match, unexpected error-rate output | Check `target_month + metric` keys and final actual storage. |
-| Report / Excel | Missing sheet, stale report text, export failure | Re-run export and record artifact evidence. |
-| Security | Sensitive identifier found in input, memo, report, or output | Stop sharing the artifact, remove it from the pilot folder, and record incident without repeating the sensitive value. |
-| Formula / strategy | Request to change F1/F2/F3 or remove P/O scenarios | Escalate outside the pilot. Do not self-fix in this step. |
+L4-Production remains blocked until all of the following are approved and
+evidenced:
 
-## Required Pilot Records
+- Remote HEAD is verified.
+- Push and Streamlit redeploy are performed and verified.
+- Private or restricted internal deployment is confirmed.
+- Production access control is approved.
+- Production real-data policy is approved.
+- Official `final_actual` governance is approved.
+- Password and secret rotation is confirmed.
+- Official production approver is recorded.
 
-Maintain the following pilot records in the approved pilot folder:
+R03 does not approve L4-Shadow or L4-Production. R04B approves only the
+L4-Shadow policy structure and LOCKE-owned restricted aggregate data scope.
 
-- Daily run log with date, metric, `as_of_date`, operator, save result, report
-  result, and issue note.
-- Weekly review note.
-- Month-end final actual evidence.
-- Backtest summary evidence.
-- User feedback summary.
-- Security incident log, even if the result is "none found".
-- L3 acceptance checklist.
+## 9. Known R03 Warnings
 
-## Exit Decision
+The following warnings are accepted only for L3 pilot preparation and must remain
+visible in readiness records:
 
-At the end of the pilot, LOCKE prepares one recommendation:
+- Deploy source dirty state was a known R03 warning. R04A later recorded deploy
+  source clean local commit
+  `5be44e16b31da425d0e6fab326781a01581af25e`.
+- Remote HEAD is not verified due to blocked network verification.
+- Optional internal reviewer name is not recorded unless separately approved.
+- Real sales data is not approved for L3.
+- Restricted aggregate real-data is allowed only in L4-Shadow under LOCKE
+  approval.
+- Public broad real-data use is not approved.
+- L3 `final_actual` real operation is not approved.
+- L4-Shadow aggregate monthly final_actual is allowed only under LOCKE
+  ownership.
+- L4-Production is not approved.
+- R03.1A launch approval final decision is `CONDITIONAL_GO`.
 
-- Continue pilot: use when core operation works but more samples are needed.
-- Expand carefully: use when acceptance criteria are met and risks are minor.
-- Pause and fix: use when a critical error, history gap, report failure, or
-  security issue blocks broader use.
+## 10. Pilot Exit Decision
 
-The exit decision is approved only after the acceptance criteria in
-`audit/l3_pilot_acceptance.md` are reviewed.
+At pilot end, LOCKE records one decision:
+
+- `go`: continue or expand the internal pilot under the same data restrictions.
+- `conditional_go`: proceed only after named conditions are resolved.
+- `no_go`: pause until blockers are corrected.
+
+The exit decision must include evidence references, remaining risks, and whether
+L4 blockers are still open.

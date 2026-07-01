@@ -8,6 +8,13 @@ from typing import Any
 
 import pandas as pd
 
+from src.display_labels import (
+    get_status_label,
+    get_strategy_code,
+    get_strategy_label,
+    get_strategy_short_description,
+)
+
 
 FORECAST_MODEL_LABELS = {
     "F1_CUMULATIVE_RATE": "F1",
@@ -30,9 +37,9 @@ METRIC_LABELS = {
     "recognized": "인정실적",
 }
 TARGET_STATUS_LABELS = {
-    "UNDER_TARGET": "목표 미달",
-    "ON_TARGET": "목표선 근접",
-    "OVER_TARGET": "목표 초과",
+    "UNDER_TARGET": get_status_label("UNDER_TARGET"),
+    "ON_TARGET": get_status_label("ON_TARGET"),
+    "OVER_TARGET": get_status_label("OVER_TARGET"),
     "UNKNOWN_TARGET_STATUS": "계산 불가",
 }
 RISK_LEVEL_LABELS = {
@@ -123,15 +130,16 @@ def build_daily_report_text(
             )
         )
 
-    overachievement_lines = _build_overachievement_lines(result)
-    if overachievement_lines:
-        sections.append(("초과달성 운영전략", overachievement_lines))
-
-    sections.append(("다음 마감", [_build_next_close_sentence(result, next_close_result)]))
+    strategy_lines = _build_recommended_strategy_lines(result, selected_scenario_id)
+    if strategy_lines:
+        sections.append(("추천 운영전략", strategy_lines))
 
     risk_sentences = _build_risk_sentences(result)
+    risk_sentences.extend(_build_quality_risk_lines(result))
     if risk_sentences:
-        sections.append(("위험등급 및 확인 사항", risk_sentences))
+        sections.append(("리스크 관리", risk_sentences))
+
+    sections.append(("다음 액션", [_build_next_close_sentence(result, next_close_result)]))
 
     report_text = _format_report_sections(sections)
     return append_model_error_summary_to_report(report_text, backtest_summary_df)
@@ -347,6 +355,130 @@ def _build_term_definition_lines() -> list[str]:
     return lines
 
 
+def _build_recommended_strategy_lines(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None,
+) -> list[str]:
+    if scenario_df.empty:
+        return []
+
+    selected_row = _selected_or_first_row(scenario_df, selected_scenario_id)
+    if selected_row is None:
+        return []
+
+    scenario_id = _scenario_name(selected_row)
+    strategy_code = get_strategy_code(_strategy_source(selected_row) or scenario_id)
+    strategy_label = get_strategy_label(strategy_code)
+    strategy_description = get_strategy_short_description(strategy_code)
+    target_status = str(selected_row.get("target_status", ""))
+    lines = [
+        f"선택 전략은 {strategy_code} {strategy_label}입니다. {strategy_description}",
+    ]
+
+    if target_status == "OVER_TARGET" or str(selected_row.get("strategy_type", "")) == "OVERACHIEVEMENT":
+        lines.append(_selected_overachievement_detail_line(selected_row, strategy_code))
+        support_lines = _supporting_overachievement_lines(scenario_df, strategy_code)
+        if support_lines:
+            lines.append("보조 전략: " + "; ".join(support_lines))
+        lines.append(
+            "감리 호환 명칭: O1 목표 유지 안전버퍼, O2 상향 목표 전환, O3 계약 품질 방어."
+        )
+    else:
+        action = selected_row.get("recommended_action")
+        if not _is_missing(action) and str(action).strip():
+            lines.append(_recommended_action_sentence(selected_row, "선택 전략의 권장 조치를 확인합니다."))
+
+    return _dedupe_lines(lines)
+
+
+def _selected_or_first_row(
+    scenario_df: pd.DataFrame,
+    selected_scenario_id: str | None,
+) -> pd.Series | None:
+    if selected_scenario_id:
+        selected_rows = scenario_df.loc[
+            scenario_df.get("scenario_id", pd.Series(dtype=object)).astype(str)
+            == selected_scenario_id
+        ]
+        if not selected_rows.empty:
+            return selected_rows.iloc[0]
+    if scenario_df.empty:
+        return None
+    return scenario_df.iloc[0]
+
+
+def _selected_overachievement_detail_line(row: pd.Series, strategy_code: str) -> str:
+    if strategy_code == "O2":
+        return (
+            f"O2 Stretch 전환분은 {_format_amount(row.get('stretch_uplift'))}이고, "
+            f"운영전략 월 목표는 {_format_amount(row.get('revised_monthly_target'))}, "
+            f"잔여 안전버퍼는 {_format_amount(row.get('remaining_surplus_buffer'))}입니다."
+        )
+    if strategy_code == "O3":
+        return (
+            f"O3 품질 방어 기준의 목표 달성 최소 잔여 실적은 "
+            f"{_format_amount(row.get('minimum_remaining_to_hit_target'))}이고, "
+            f"품질관리 여유분은 {_format_amount(row.get('relief_amount'))}입니다."
+        )
+    return (
+        f"O1 버퍼 유지 기준의 잔여 안전버퍼는 "
+        f"{_format_amount(row.get('remaining_surplus_buffer'))}입니다."
+    )
+
+
+def _supporting_overachievement_lines(
+    scenario_df: pd.DataFrame,
+    selected_strategy_code: str,
+) -> list[str]:
+    if "target_status" not in scenario_df:
+        return []
+    over_rows = scenario_df.loc[scenario_df["target_status"].astype(str) == "OVER_TARGET"]
+    lines: list[str] = []
+    for code in ("O1", "O2", "O3"):
+        if code == selected_strategy_code:
+            continue
+        matches = over_rows.loc[
+            over_rows.get("scenario_id", pd.Series(dtype=object)).astype(str).str.endswith(f"_{code}")
+        ]
+        if matches.empty:
+            continue
+        lines.append(f"{code} {get_strategy_label(code)}")
+    return lines
+
+
+def _build_quality_risk_lines(scenario_df: pd.DataFrame) -> list[str]:
+    if "target_status" not in scenario_df:
+        return []
+    if not (scenario_df["target_status"].astype(str) == "OVER_TARGET").any():
+        return []
+    return [
+        "초과달성 구간에서는 취소/철회/미결제 리스크와 계약 품질, 결제완료율을 함께 방어합니다."
+    ]
+
+
+def _strategy_source(row: pd.Series) -> object:
+    for key in (
+        "overachievement_strategy",
+        "provision_strategy",
+        "neutral_strategy",
+        "strategy_id",
+        "scenario_id",
+    ):
+        value = row.get(key)
+        if not _is_missing(value) and str(value):
+            return value
+    return ""
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        text = str(line).strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
 def _build_overachievement_lines(scenario_df: pd.DataFrame) -> list[str]:
     if "target_status" not in scenario_df:
         return []
@@ -536,6 +668,9 @@ def _split_scenario_id(scenario_id: str) -> tuple[str, str]:
 
 
 def _selected_scenario_definition(forecast_key: str, provision_key: str) -> str:
+    strategy_label = get_strategy_label(provision_key)
+    if strategy_label and strategy_label != provision_key:
+        return f"{forecast_key} + {provision_key} {strategy_label} 조합"
     return f"{forecast_key} + {provision_key} 조합"
 
 

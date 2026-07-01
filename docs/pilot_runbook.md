@@ -1,139 +1,184 @@
-# Pilot Runbook
+# R03 L3 Pilot Runbook
 
-This runbook is for a limited LOCKE pilot with 1 to 3 named users. The pilot
-uses direct input files and the Streamlit UI to run daily month-end sales
-forecasts, save forecast history, enter confirmed month-end actuals, and review
-Backtest results.
+This runbook describes how to operate the L3 internal pilot with sample or
+anonymous data only. It does not approve real data for L3, public broad
+real-data use, formula changes, deployment changes, or source-code changes.
+R04B separately defines L4-Shadow as restricted internal aggregate real-data
+shadow validation under LOCKE approval.
 
-## Operating Principles
+## R03.1A Launch Values
 
-- Use only the dates already present in the input file.
-- Decide close days only with the `is_close_day` column.
-- Use `day_name` only as a display label.
-- Do not edit the original source input file in place. Work from a copied
-  operating file for the pilot day.
-- Do not enter customer names, phone numbers, addresses, contract numbers,
-  resident registration numbers, or any other sensitive identifiers.
-- Keep the pilot group limited to the approved 1 to 3 users. Do not forward the
-  app URL, input files, output Excel files, or audit bundles outside the pilot.
-- L3: sample / anonymous pilot. Use sample or anonymous aggregate inputs unless
-  a later approval record explicitly changes the level.
-- L4-Shadow: restricted internal aggregate real-data shadow validation. This is
-  limited to invited internal users only and does not approve production use.
-- L4-Production: official production operation, not approved.
-- app result does not replace official reporting. Continue to rely on the
-  official reporting process for controlled business records.
-- memo identifiers prohibited. Do not enter customer, contract, account,
-  personal, or contact identifiers in memo fields, notes, reports, or issue
-  records.
-- broad public real-data use prohibited. Do not use public or broadly shared
-  Streamlit access for real-data operation.
-- `final_actual` is final_actual shadow aggregate only during approved
-  L4-Shadow validation.
+| Field | Value |
+| --- | --- |
+| Pilot users | LOCKE only. Optional internal reviewer: maximum 1, name recorded only after separate approval. |
+| Pilot period | 2026-06-11 to 2026-06-17 KST |
+| Access method | Current Streamlit URL + password gate. Sample / anonymous data only. Public Streamlit real-data use prohibited. |
+| Password owner | LOCKE |
+| Sample dataset | 1 `UNDER_TARGET` sample, 1 `ON_TARGET` sample, 1 `OVER_TARGET` sample. No real customer names, contract numbers, phone numbers, addresses, or real sales data. |
+| Feedback owner | LOCKE |
+| Go/no-go owner | LOCKE |
+| Data scope | sample / anonymous only |
+| Real data allowed | no for L3; restricted aggregate real-data allowed only in L4-Shadow under LOCKE approval |
+| Public Streamlit real-data use allowed | no |
 
-## 1. Daily Input File Update
+The current launch approval decision is `CONDITIONAL_GO`. The pilot may start
+only within the recorded period, with LOCKE-only operation unless one internal
+reviewer is separately approved, and with sample or anonymous data only.
 
-1. Copy the latest approved input file to the daily working location.
-2. Confirm the required columns exist:
-   `date`, `day_name`, `business_day_no`, `is_close_day`, `close_type`,
-   `sales_target_daily`, `recognized_target_daily`, `sales_actual_cum`,
-   `recognized_actual_cum`, and `memo`.
-3. Update daily target values only for dates already present in the table.
-4. Update cumulative actual values through the selected `as_of_date`.
-5. Leave cumulative actual values after `as_of_date` blank unless the user has
-   intentionally entered future defaults for later operation.
-6. Confirm `is_close_day` is accurate for each input row. Do not infer close days
-   from day labels or date patterns.
-7. Save the working copy. Keep the original source file unchanged.
+## R04B Stage Update
 
-## 2. Forecast Execution
+Operating stages are now defined as:
 
-1. Start the Streamlit app from the project root.
+- L3: sample / anonymous pilot.
+- L4-Shadow: restricted internal aggregate real-data shadow validation.
+- L4-Production: official production operation.
 
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_streamlit_server.ps1
-   ```
+This runbook remains the L3 runbook. L4-Shadow uses separate policy controls:
+restricted invited internal users, password gate, current input columns only,
+aggregate target and cumulative performance values only, no identifiers in
+`memo` or file names, no external sharing, and no replacement of official
+reporting.
 
-2. Open the local or deployed Streamlit URL provided for the pilot.
-3. Upload the daily working input file or use the configured sample only for
-   non-production testing.
-4. Select the metric: `sales` or `recognized`.
-5. Select the `as_of_date` from the dates present in the input table.
-6. Review validation errors first. If errors exist, stop and fix the working
-   input file before using scenario results.
-7. Review F1/F2/F3 forecast rows and P1/P2/P3 or O1/O2/O3 strategy rows.
+R04A deploy source clean local commit:
+`5be44e16b31da425d0e6fab326781a01581af25e`.
 
-## 3. Saving Forecast History
+## 1. Pre-Pilot Checks
 
-1. Open the `예측 이력 / Backtest` tab.
-2. Confirm the current metric and `as_of_date` are correct.
-3. Click `예측 이력 저장`.
-4. Confirm the success message shows rows appended to `forecast_history`.
-5. The default history location is `outputs/history/forecast_history.csv`.
-6. If duplicate-run blocking appears, do not edit the CSV manually. Re-run the
-   forecast only after confirming whether the same run was already saved.
+Before the pilot starts, confirm and record:
 
-## 4. Entering Confirmed Month-End Actuals
+- `audit/l3_pilot_launch_approval.md` final decision is `GO` or
+  `CONDITIONAL_GO`.
+- `pytest` result is PASS.
+- Gate Runner ALL result is PASS.
+- `G23_OUTPUTS_LATEST_STRICT` result is PASS.
+- `outputs/latest` strict check result is PASS.
+- Deploy traceability L3 result is recorded.
+- Known warnings are visible, including deploy dirty and remote HEAD not
+  verified.
+- Input data is sample or anonymous only.
+- Pilot user is LOCKE; optional reviewer is not added unless separately
+  approved.
+- Pilot period is 2026-06-11 to 2026-06-17 KST.
+- Access method is the current Streamlit URL + password gate.
+- Password owner is LOCKE.
+- Sample dataset is the approved `UNDER_TARGET`, `ON_TARGET`, and
+  `OVER_TARGET` sample set.
+- Feedback owner is LOCKE.
+- Public broad Streamlit real-data use is not approved.
+- `final_actual` is limited to sample or anonymous completed-month data during
+  L3.
 
-1. After month close is confirmed, prepare the final actual values by metric.
-2. Store only aggregate monthly values:
-   `target_month`, `metric`, `final_actual`, `monthly_target`, optional
-   cancellation or net amount, optional memo, and update timestamp.
-3. Use the app-supported final actual workflow when available. If a controlled
-   admin script is used, write through `src.final_actual_store` helpers rather
-   than hand-editing rows.
-4. Confirm the saved CSV exists at `outputs/history/final_actuals.csv`.
-5. Confirm one row per `target_month + metric`. Later saves replace the existing
-   row for the same month and metric.
+## 2. Execution Order
 
-## 5. Backtest Review
+Run each pilot case in this order:
 
-1. Open the `예측 이력 / Backtest` tab.
-2. Confirm both `forecast_history` and `final_actuals` tables are visible.
-3. Review row-level forecast error, absolute error, `error_rate`, and signed
-   error direction where the month and metric match.
-4. Review the model summary by `forecast_model`.
-5. Treat the current Backtest as directional during the first pilot month. Use
-   model weighting only after enough monthly samples have accumulated.
+1. Open the Streamlit app through the approved access method.
+2. Upload a sample or anonymous input file, or select the configured sample.
+3. Confirm input validation results before interpreting forecasts.
+4. Review KPI values.
+5. Review `target_status`.
+6. Review `target_variance`.
+7. Review `surplus_to_target`.
+8. Review the next-close cumulative-line required amount.
+9. Review Scenario Grid.
+10. Review P1/P2/P3 for under-target cases or O1/O2/O3 for over-target cases.
+11. Review generated report text.
+12. Download the Excel report.
+13. Confirm whether forecast history is saved.
+14. Open the Backtest tab and confirm it is understandable.
+15. Record evidence and feedback.
 
-## 6. Report Text and Excel Download
+Do not continue to report interpretation if validation fails.
 
-1. Select the forecast and strategy row that will be used for reporting.
-2. Review the generated report text for:
-   target status, forecast amount, gap or surplus, risk level, selected strategy,
-   and operational recommendation.
-3. Confirm no sensitive identifiers appear in report text or memo fields.
-4. Download the Excel report from the Streamlit export control.
-5. Open the workbook and confirm these sheets are present:
-   `Summary`, `ScenarioGrid`, `DailyRevisedTargets`, `CloseCycle`, `Validation`,
-   `ReportText`, `ForecastHistory`, `FinalActuals`, `BacktestSummary`,
-   `ModelWeights`, `ConfidenceBand`, and `Insights`.
-6. Store the Excel output in the approved pilot folder only.
+## 3. Result Interpretation Guide
 
-## 7. Error Handling
+Use the following operating interpretation during the pilot:
 
-| Symptom | Likely cause | Action |
+| Output | Meaning | Operating response |
 | --- | --- | --- |
-| Validation error blocks calculation | Missing column, invalid numeric value, missing actual through `as_of_date`, or missing close-day marker | Fix the working input file and re-run validation. |
-| Forecast result is unavailable | Required target or actual context is incomplete | Check cumulative actuals through `as_of_date` and target columns. |
-| F2 or F3 falls back | Not enough completed close-cycle or close/non-close history | Document the fallback in the daily note; do not change formulas. |
-| `CAPACITY_LIMITED` appears | Target uplift cannot be allocated within cap rules | Escalate capacity, target, or operating-calendar assumptions. |
-| History save duplicate error | Same `run_id` or fallback key was already saved | Confirm whether the run is already captured before retrying. |
-| Backtest table is empty | No matching `target_month + metric` between history and final actuals | Confirm month format and metric spelling. |
-| Excel export fails | File is open, output path is blocked, or dependencies are unavailable | Close the workbook, retry export, then run pytest if the issue repeats. |
+| `UNDER_TARGET` | Forecast is below target. | Review P1/P2/P3 and decide whether target recovery is operationally plausible. |
+| `ON_TARGET` | Forecast is near target or maintaining target. | Maintain current plan and monitor next-close requirements. |
+| `OVER_TARGET` | Forecast is above target. | Review O1/O2/O3 and decide how to manage surplus without quality loss. |
+| O1 | Keep buffer. | Preserve surplus as delivery or closing-risk buffer. |
+| O2 | Convert to stretch. | Consider controlled stretch target if capacity and quality allow. |
+| O3 | Defend quality. | Protect quality, risk controls, and fulfillment stability. |
 
-## 8. Real Data Security
+The next-close cumulative-line required amount is not the full monthly gap. It
+is the required performance needed to align with the plan line by the next close
+day.
 
-- Keep pilot files in a restricted folder with access only for named pilot users.
-- Do not paste raw customer data into chat, tests, sample files, memo fields, or
-  issue reports.
-- Use aggregated amounts only. Replace customer-specific context with anonymous
-  operational notes such as `large deal moved`, `cancellation risk`, or
-  `payment pending`.
-- Check Excel reports before sharing. Remove any sheet, memo, or downloaded file
-  that includes sensitive identifiers.
-- Do not commit `outputs/history`, downloaded Excel files, local secrets, or
-  working input files containing real business data.
-- If sensitive data is accidentally included, stop the pilot run, delete the
-  shared artifact, rotate access if needed, and record the incident in the pilot
-  checklist without repeating the sensitive value.
+## 4. Excel Sharing Rules
+
+Excel reports may be shared only when all of the following are true:
+
+- The report came from `outputs/latest` or Streamlit download.
+- `archive_old_format` is not used.
+- `archive_invalid` is not used.
+- File name and generated date are recorded.
+- For L3, the file contains sample or anonymous data only.
+- No sensitive information appears in any sheet, memo, report text, file name,
+  or screenshot.
+- Sharing is limited to approved internal pilot users.
+
+Do not attach or forward reports outside the approved pilot group.
+
+## 5. Issue Handling
+
+Use the following response guide when issues occur:
+
+| Issue | Immediate action | Evidence to record |
+| --- | --- | --- |
+| Validation fail | Stop interpretation, correct the sample or anonymous input, and rerun. | Validation message, corrected field category, rerun result. |
+| Upload error | Confirm file type, schema, and sample/anonymous status. | File name, error message, retry result. |
+| Excel download failure | Retry once, confirm the workbook is not already open, then escalate if repeated. | Screenshot, generated file name if any, error time. |
+| Result value looks wrong | Stop decision use and compare input assumptions, selected metric, and selected date. | KPI screenshot, selected date, input case id. |
+| Streamlit access error | Confirm approved access method and user authorization. | URL type, user role, error screenshot. |
+| Sensitive information found | Stop sharing, remove the artifact from pilot circulation, and record the incident without repeating the sensitive value. | Incident id, artifact type, owner, containment action. |
+| Unauthorized access | Stop pilot access and escalate to LOCKE. | User role, access method, time, containment action. |
+
+Formula-change requests are recorded as feedback only and must not be
+implemented during R03.
+
+## 6. Evidence To Record
+
+For each pilot case, record:
+
+- KPI screenshot.
+- Scenario Grid screenshot.
+- P1/P2/P3 or O1/O2/O3 screenshot.
+- Report Text screenshot.
+- Backtest screenshot.
+- Excel file name.
+- Excel generated date.
+- Test and Gate log references.
+- Pilot feedback form entry.
+- Any known warning acknowledgement.
+
+Screenshots must not include real customer, contract, personal, or other
+sensitive information.
+
+## 7. Data and Security Rules
+
+- Use sample or anonymous data only for L3.
+- Do not use actual sales records in L3.
+- Do not use real completed-month actuals in L3 `final_actual` tests.
+- For L4-Shadow, use only LOCKE-approved aggregate inputs and aggregate monthly
+  final_actual values under LOCKE ownership.
+- Do not include identifiers in `memo`, file names, feedback, screenshots, or
+  outputs.
+- Do not paste raw data into chat, tickets, feedback, reports, or screenshots.
+- Do not read, copy, print, or share secret files.
+- Do not approve public broad Streamlit real-data operation.
+- Do not use app results as official reporting during L4-Shadow.
+
+## 8. Completion Rule
+
+A pilot run is complete only when:
+
+- Validation is passed or the validation issue is documented as the run result.
+- KPI and Scenario Grid are reviewed.
+- Relevant strategy output is reviewed.
+- Excel report is downloaded or the failure is recorded.
+- History and Backtest flow are reviewed where applicable.
+- Feedback is captured.
+- Sensitive-data check is complete.

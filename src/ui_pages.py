@@ -32,8 +32,7 @@ def render_page(page_key: object, context: Mapping[str, Any]) -> None:
     renderer = {
         "home": render_home_page,
         "input": render_input_page,
-        "forecast": render_forecast_page,
-        "scenarios": render_scenarios_page,
+        "forecast_strategy": render_forecast_strategy_page,
         "report": render_report_page,
         "history": render_history_page,
         "excel": render_excel_page,
@@ -120,20 +119,19 @@ def render_input_page(context: Mapping[str, Any]) -> None:
 
 
 def render_forecast_page(context: Mapping[str, Any]) -> None:
-    _render_callback_page(
-        "forecast",
-        "F1/F2/F3 예측과 목표 상태, 다음 마감 누적선을 확인합니다.",
-        context,
-        "render_forecast_page",
-    )
+    render_forecast_strategy_page(context)
 
 
 def render_scenarios_page(context: Mapping[str, Any]) -> None:
+    render_forecast_strategy_page(context)
+
+
+def render_forecast_strategy_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
-        "scenarios",
-        "P1/P2/P3 보정 전략과 O1/O2/O3 초과달성 운영 전략을 비교합니다.",
+        "forecast_strategy",
+        "F1/F2/F3 예측, 목표 상태, 선택 시나리오와 운영전략을 한 화면에서 확인합니다.",
         context,
-        "render_scenarios_page",
+        "render_forecast_strategy_page",
     )
 
 
@@ -262,7 +260,7 @@ def _home_hero_html() -> str:
 
 def _home_cta_html() -> str:
     ctas = (
-        ("시나리오 자세히 보기", "scenarios"),
+        ("예측 · 전략 보기", "forecast_strategy"),
         ("Excel 공유로 이동", "excel"),
         ("예측 이력 확인", "history"),
         ("보고 메모 열기", "report"),

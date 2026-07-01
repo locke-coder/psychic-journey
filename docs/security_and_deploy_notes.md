@@ -1,25 +1,127 @@
-# 보안 및 배포 메모
+# Security And Deploy Notes
 
-## 로컬 실행과 배포 차이
+Updated for R04B on 2026-06-11 KST.
 
-이 도구는 사용자가 영업 일정, 일별 목표, 누적 실적을 직접 입력해 월마감 예상실적과 보고 산출물을 만드는 내부 운영 도구다. 로컬 실행은 개인 PC 또는 통제된 업무 환경을 전제로 하며, 배포 환경은 접근 권한, 저장소 공개 범위, 로그 보관 정책을 별도로 검토해야 한다.
+## Local Operation Vs Deployment
 
-## Public Streamlit 배포
+The app supports month-end forecasting by allowing users to enter operating
+dates, daily targets, cumulative performance values, and non-identifying memos.
+Local operation and deployed operation have different risk profiles because
+deployment introduces viewer access, shared outputs, retention, and audit
+requirements.
 
-실제 영업실적, 목표, 계약 관련 메모가 포함될 수 있으므로 Public Streamlit 또는 외부 공개 URL에 운영 데이터를 올리는 방식은 금지 또는 강하게 비추천한다. 데모가 필요하면 익명화된 샘플 데이터만 사용한다.
+## U02 Local Audit Auth Gate Status
 
-## Private/사내망 배포
+U02 temporarily disables the runtime password/Auth Gate for local audit and
+screen capture convenience. This is not an approval for external operation.
+Before Public or external deployment, R01 must restore an Auth Gate and verify
+access-control behavior.
 
-운영 공유가 필요하면 Private Streamlit, 사내망, VPN, SSO 등 접근 제어가 가능한 환경을 우선 사용한다. private 배포 또는 사내망 배포 전에는 보안 담당자의 검토를 받아야 한다.
+`.streamlit/secrets.toml` remains local-only. Its contents must not be read,
+printed, copied, reported, or included in audit/deployment packages.
 
-## secrets.toml 관리 원칙
+Real operational data, customer identifiers, contract identifiers, and person
+level data must not be exposed outside the approved internal process.
 
-`.streamlit/secrets.toml`은 로컬 전용 파일이다. 실제 값은 GitHub, 외부 저장소, 감리 제출 패키지, 배포 zip에 포함하지 않는다. 공유 가능한 예시는 `.streamlit/secrets.example.toml`만 사용하며, 이 파일에는 placeholder 값만 둔다.
+## Stage-Based Data Policy
 
-## 실제 영업데이터 관리
+| Stage | Data policy | Deployment posture |
+| --- | --- | --- |
+| L3 | Sample / anonymous only | Current Streamlit URL plus password gate for approved internal pilot users. |
+| L4-Shadow | Restricted internal aggregate real-data shadow validation | Invited internal users only, password gate maintained, no external sharing. |
+| L4-Production | Official production operation | Not approved until remote HEAD, access control, final_actual governance, and official approval are complete. |
 
-실제 고객명, 전화번호, 주소, 계약번호, 주민번호, 상세 계약 메모 등 민감정보는 테스트, 샘플, GitHub, 외부 저장소에 올리지 않는다. 운영 입력 파일은 원본을 직접 수정하지 않고, 필요한 경우 별도 복사본 또는 익명화 데이터로 검증한다.
+The L3 "sample / anonymous only" rule remains valid for L3. R04B adds
+L4-Shadow as a separate restricted stage where aggregate real-data-like inputs
+are allowed under LOCKE approval. Public broad real-data use remains
+prohibited.
 
-## 감리 패키지 생성
+## Public Streamlit Deployment
 
-감리 제출 패키지는 `tools/collect_audit_artifacts.py`로 생성한다. 기본 정책은 `outputs/latest/`만 포함하고, `outputs/archive_invalid/`와 민감 파일은 제외한다. 패키지에는 `audit_submit/manifest.md`가 포함되며, included/excluded 파일 목록과 `excluded_sensitive_files` 경로 목록만 기록한다. 민감 파일 내용은 기록하지 않는다.
+Public broad real-data use is prohibited. Do not upload operational real data,
+customer data, contract data, person-level data, raw CRM exports, secrets, keys,
+or passwords to a public or externally shared Streamlit URL.
+
+Demo or L3 pilot use must remain sample or anonymous.
+
+## Restricted Internal L4-Shadow Deployment
+
+L4-Shadow may use the current Streamlit URL plus password gate and/or Streamlit
+private invited users when all of the following are true:
+
+- LOCKE approves the invited-user list.
+- Viewer list is reviewed before launch.
+- Access is removed after the shadow period or role change.
+- Only current input columns are used.
+- Only aggregate targets, aggregate cumulative actuals, aggregate recognized
+  actuals, and aggregate monthly final_actual values are used.
+- `memo` and file names contain no identifiers.
+- Outputs and Excel downloads stay inside the approved internal shadow group.
+- App results do not replace official reporting.
+
+Actual invited-user email addresses are managed in a separate operating note and
+are not recorded in this repository document.
+
+## Secrets Management
+
+Never include, print, copy, or package the following:
+
+- `.streamlit/secrets.toml`
+- `.env`
+- `*.key`
+- Passwords
+- API tokens
+- Private keys
+
+Only placeholder examples may be shared, such as
+`.streamlit/secrets.example.toml`.
+
+## Real Data And Identifier Rules
+
+Allowed during L4-Shadow:
+
+- Aggregate daily target values.
+- Aggregate cumulative actual values.
+- Aggregate recognized cumulative actual values.
+- Aggregate monthly final_actual values under LOCKE ownership.
+
+Prohibited in all non-production repository documents, outputs, file names,
+feedback, screenshots, and shared artifacts:
+
+- Customer names.
+- Phone numbers.
+- Addresses.
+- Contract numbers.
+- Resident registration numbers.
+- Employee personal information.
+- Customer-level transaction ledgers.
+- Contract-level transaction ledgers.
+- Raw CRM exports.
+- Secrets, keys, and passwords.
+
+If an identifier is found in `memo`, a file name, output, screenshot, or
+feedback item, remove the artifact from circulation and recreate the input or
+evidence without the identifier.
+
+## Audit Package Generation
+
+Audit packages must not include secrets, invalid archives, raw CRM exports, or
+customer/contract/person-level operational files. R04B does not regenerate
+`audit_submit.zip`.
+
+Runtime operator sample storage is also excluded from audit packages by
+default. Do not include `runtime_storage/`, `runtime_storage/operator_samples/`,
+`operator_data/`, `local_data/`, `*.local.csv`, or `*.local.xlsx` unless a
+separate internal approval explicitly confirms that all real operational and
+identifier-like data has been removed.
+
+The audit manifest may record excluded runtime paths by name only. It must not
+copy or summarize operator sample file contents.
+
+## R04A Deploy Basis
+
+- Deploy source clean local commit:
+  `5be44e16b31da425d0e6fab326781a01581af25e`.
+- Push performed in R04B: false.
+- Streamlit redeploy performed in R04B: false.
+- Remote HEAD verified in R04B: false.

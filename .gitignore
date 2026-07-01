@@ -4,23 +4,55 @@ outputs/*.xlsx
 outputs/saved_actuals.csv
 outputs/streamlit_deploy_source/
 outputs/streamlit_deploy_source.zip
-outputs/pytest_tmp/
-outputs/*.log
-outputs/archive_invalid/
-outputs/archive_old_format/
 .venv/
 .env
-*.key
-*secret*
-*secrets*
 .streamlit/secrets.toml
 .streamlit/secrets.*.toml
 !.streamlit/secrets.example.toml
 runtime_storage/
-runtime_storage/operator_samples/
 operator_data/
 local_data/
 *.local.csv
 *.local.xlsx
-audit_submit.zip
+*.key
+*.pem
+*.p12
+*.pfx
+outputs/archive_invalid/
+outputs/archive_old_format/
 audit_submit/
+audit_submit.zip
+
+# local secrets / env
+*secret*
+*secrets*
+
+# virtualenv / caches
+.venv_test/
+
+# temporary pytest/codex artifacts
+.tmp/
+.tmp*/
+.tmppytest*/
+.tmpr*/
+
+# audit/evidence packages - do not publish
+audit/
+audit_submit_*.zip
+audit_submit_U*/
+L3_QA_Evidence_*.zip
+qa_evidence/
+
+# output archives - public demo uses outputs/latest only
+outputs/gate_tmp*/
+outputs/pytest_tmp*/
+outputs/pytest_tmp_run_*/
+outputs/streamlit_*.log
+outputs/streamlit_deploy_push_*/
+outputs/streamlit_deploy_source_writable/
+outputs/push_bare_repo_*/
+outputs/push_index_*
+outputs/history/
+data/history/
+docs/private_data_qa_guide.md
+docs/private_deployment_verification_checklist.md
