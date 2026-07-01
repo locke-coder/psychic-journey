@@ -2154,8 +2154,6 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
         "home": "홈",
         "input": "입력 · 데이터",
         "forecast_strategy": "예측 · 전략 통합",
-        "forecast": "KPI · 예측",
-        "scenarios": "시나리오",
         "report": "보고 메모",
         "history": "예측 이력",
         "excel": "Excel 공유",
@@ -2173,14 +2171,6 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
         "forecast_strategy": (
             "상단 결론 요약에서 목표 상태, 목표 대비 차이, 다음 마감 누적선을 먼저 확인합니다.",
             "선택 시나리오를 바꿔 운영 판단판과 상세 표를 같은 화면에서 비교합니다.",
-        ),
-        "forecast": (
-            "target_status와 다음 마감 누적선 필요실적을 확인합니다.",
-            "F1/F2/F3 차이를 본 뒤 시나리오 전략 보기로 이동합니다.",
-        ),
-        "scenarios": (
-            "운영안 후보를 하나 선택하고 P1/P2/P3, O1/O2/O3 참고 카드를 함께 비교합니다.",
-            "보고 메모에서 선택 전략의 문구와 리스크 설명을 확인합니다.",
         ),
         "report": (
             "보고 메모 원문을 복사용 영역에서 확인합니다.",

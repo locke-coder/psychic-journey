@@ -181,6 +181,8 @@ def test_app_main_renders_without_password_gate_call() -> None:
     assert '"forecast": "forecast_strategy"' in navigation_source
     assert '"scenarios": "forecast_strategy"' in navigation_source
     assert "KPI · 예측" not in navigation_source
+    assert '"forecast": "KPI · 예측"' not in app_source
+    assert '"scenarios": "시나리오"' not in app_source
     assert '"title": "시나리오"' not in navigation_source
     assert "_render_forecast_strategy_detail_page" in app_source
     assert '"render_forecast_strategy_page"' in app_source
