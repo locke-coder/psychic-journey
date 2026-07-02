@@ -138,6 +138,7 @@ SAMPLE_INPUT_SOURCE_LABEL = "샘플 데이터"
 HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL = "과거 샘플 데이터"
 OPERATOR_SAMPLE_SOURCE_LABEL = "운영 저장본"
 PACKAGED_SAMPLE_DISPLAY_LABEL = "내장 샘플"
+SAVED_ACTUALS_SOURCE_LABEL = "내장 샘플 + 저장 실적"
 UPLOAD_SAMPLE_DISPLAY_LABEL = "업로드 파일"
 INPUT_TEMPLATE_HEADERS = (
     "date",
@@ -1230,7 +1231,9 @@ def _get_current_input_state() -> tuple[pd.DataFrame, str]:
     else:
         source_label = SAMPLE_INPUT_SOURCE_LABEL
         saved_actuals = _load_saved_actuals_for_ui()
-        prepared_df, _ = apply_latest_upload_policy(df, source_label, saved_actuals)
+        prepared_df, default_source = apply_latest_upload_policy(df, source_label, saved_actuals)
+        if default_source == "saved":
+            source_label = SAVED_ACTUALS_SOURCE_LABEL
     _store_current_input_state(prepared_df, source_label)
     return prepared_df, source_label
 
@@ -8948,7 +8951,10 @@ def _render_historical_input_template_download() -> None:
 def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     st.header("1. 파일 업로드")
     _render_input_template_download()
-    st.caption("새로 업로드한 입력 파일의 누적 실적은 최신 기본값으로 등록됩니다.")
+    st.caption(
+        "업로드 파일은 현재 화면에 먼저 적용됩니다. 앱 리부트 후 기본 입력값으로 쓰려면 "
+        "운영 샘플 관리에서 현재 입력값을 운영 기본값으로 저장하세요."
+    )
     uploaded_file = st.file_uploader("입력 파일 업로드", type=["csv", "xlsx"])
     uploaded_name = getattr(uploaded_file, "name", None)
     if uploaded_name != st.session_state.get("uploaded_file_name"):
@@ -9171,6 +9177,8 @@ def _load_packaged_sample_for_app(kind: str) -> pd.DataFrame:
 def _sample_source_display_label(source_label: str) -> str:
     if source_label == OPERATOR_SAMPLE_SOURCE_LABEL:
         return OPERATOR_SAMPLE_SOURCE_LABEL
+    if source_label == SAVED_ACTUALS_SOURCE_LABEL:
+        return SAVED_ACTUALS_SOURCE_LABEL
     if source_label in {SAMPLE_INPUT_SOURCE_LABEL, HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL}:
         return PACKAGED_SAMPLE_DISPLAY_LABEL
     if source_label:
@@ -9227,9 +9235,15 @@ def _render_input_editor(
         persist_uploaded_defaults=False,
     )
     if default_source == "uploaded":
-        st.caption("업로드 입력값을 현재 화면 기본값으로 사용합니다. 저장은 명시적 버튼 클릭 시에만 수행합니다.")
+        st.caption(
+            "업로드 입력값을 현재 화면에 적용했습니다. 리부트 후 기본 입력값으로 유지하려면 "
+            "운영 샘플 관리에서 현재 입력값을 운영 기본값으로 저장하세요."
+        )
     elif default_source == "saved":
-        st.caption(f"저장된 실적 기본값 {len(saved_actuals)}건을 불러왔습니다.")
+        st.caption(
+            f"저장된 실적 기본값 {len(saved_actuals)}건을 내장 샘플 위에 적용했습니다. "
+            "월 전체 입력표 기본값은 운영 기본값 저장본이 있을 때만 리부트 후에도 유지됩니다."
+        )
 
     editor_key = "direct_input_editor"
     source_key = "direct_input_editor_source"
@@ -9270,7 +9284,10 @@ def _render_input_editor(
         disabled=audit_readonly,
     ):
         saved_path = save_actual_values(normalized)
-        st.success(f"저장된 실적값을 갱신했습니다: {saved_path}")
+        st.success(
+            f"저장된 실적값을 갱신했습니다: {saved_path}. "
+            "리부트 기본 입력값까지 바꾸려면 운영 샘플 관리에서 현재 입력값을 운영 기본값으로 저장하세요."
+        )
     return normalized
 
 
@@ -9299,6 +9316,7 @@ def _is_current_upload_source(source_label: str) -> bool:
         SAMPLE_INPUT_SOURCE_LABEL,
         HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL,
         OPERATOR_SAMPLE_SOURCE_LABEL,
+        SAVED_ACTUALS_SOURCE_LABEL,
         "",
     }
     return bool(source_label) and source_label not in non_upload_sources

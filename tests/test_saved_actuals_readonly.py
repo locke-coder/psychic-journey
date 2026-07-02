@@ -121,6 +121,53 @@ def test_save_saved_actuals_writes_only_when_called_explicitly(tmp_path: Path) -
     assert loaded.loc[0, "recognized_actual_cum"] == 77.7
 
 
+def test_current_input_state_labels_saved_actual_overlay(monkeypatch) -> None:
+    fake_st = _FakeStreamlit()
+    base_df = pd.DataFrame(
+        {
+            "date": ["2026-06-10", "2026-06-11"],
+            "day_name": ["수", "목"],
+            "business_day_no": [7, 8],
+            "is_close_day": [False, True],
+            "close_type": ["일반", "목마감"],
+            "sales_target_daily": [2.6, 11.5],
+            "recognized_target_daily": [2.4, 10.5],
+            "sales_actual_cum": [70.5, pd.NA],
+            "recognized_actual_cum": [64.5, pd.NA],
+            "memo": ["", ""],
+        }
+    )
+    saved_actuals = pd.DataFrame(
+        {
+            "date": ["2026-06-11"],
+            "business_day_no": [8],
+            "sales_actual_cum": [88.8],
+            "recognized_actual_cum": [77.7],
+        }
+    )
+
+    monkeypatch.setattr(app, "st", fake_st)
+    monkeypatch.setattr(
+        app,
+        "load_sample_with_source",
+        lambda _kind: (
+            base_df.copy(),
+            {"source": "packaged", "path": "data/sample/input_sample.csv", "warnings": []},
+        ),
+    )
+    monkeypatch.setattr(app, "_load_saved_actuals_for_ui", lambda: saved_actuals.copy())
+
+    rendered, source_label = app._get_current_input_state()
+
+    rendered_row = rendered.loc[rendered["business_day_no"] == 8].iloc[0]
+    assert source_label == app.SAVED_ACTUALS_SOURCE_LABEL
+    assert fake_st.session_state[app.CURRENT_INPUT_SOURCE_SESSION_KEY] == app.SAVED_ACTUALS_SOURCE_LABEL
+    assert app._is_current_upload_source(app.SAVED_ACTUALS_SOURCE_LABEL) is False
+    assert app._sample_source_display_label(app.SAVED_ACTUALS_SOURCE_LABEL) == app.SAVED_ACTUALS_SOURCE_LABEL
+    assert rendered_row["sales_actual_cum"] == 88.8
+    assert rendered_row["recognized_actual_cum"] == 77.7
+
+
 def test_uploaded_policy_can_run_readonly_without_rewriting_existing_store(tmp_path: Path) -> None:
     df = load_input(app.SAMPLE_INPUT_PATH)
     saved_path = tmp_path / "saved_actuals.csv"
