@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 
 import pandas as pd
 
+import src.operator_sample_store as operator_store
 from src.loader import load_input
 from src.operator_sample_store import (
+    get_operator_sample_location,
     get_operator_sample_path,
     get_packaged_sample_path,
     load_sample_with_source,
@@ -211,3 +215,77 @@ def test_operator_sample_dir_env_keeps_repo_runtime_storage_clean(
 
     assert result["ok"] is True
     assert get_operator_sample_path("historical_input").is_relative_to(operator_dir)
+
+
+def test_github_operator_sample_loads_before_local_and_packaged(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _use_temp_operator_dir(tmp_path, monkeypatch)
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_REPO_ENV, "locke-coder/sales-forecast-data-private")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_TOKEN_ENV, "test-token")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_BRANCH_ENV, "main")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_PREFIX_ENV, "operator_samples")
+    github_df = _sample_df("current_input")
+    github_df.loc[0, "sales_target_daily"] = 4321.0
+    files = {
+        "operator_samples/current_input_sample.csv": github_df.to_csv(index=False).encode("utf-8-sig")
+    }
+
+    def fake_get_file(path: str, _config: dict[str, object]) -> dict[str, object] | None:
+        content = files.get(path)
+        if content is None:
+            return None
+        return {"content": content, "sha": f"sha-{path}"}
+
+    monkeypatch.setattr(operator_store, "_github_get_file", fake_get_file)
+
+    loaded, source = load_sample_with_source("current_input")
+
+    assert source["source"] == "github"
+    assert "sales-forecast-data-private" in source["path"]
+    assert get_operator_sample_location("current_input").startswith("github://")
+    assert loaded.loc[0, "sales_target_daily"] == 4321.0
+
+
+def test_github_operator_sample_save_updates_csv_and_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _use_temp_operator_dir(tmp_path, monkeypatch)
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_REPO_ENV, "locke-coder/sales-forecast-data-private")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_TOKEN_ENV, "test-token")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_BRANCH_ENV, "main")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_PREFIX_ENV, "operator_samples")
+    files: dict[str, bytes] = {}
+
+    def fake_get_file(path: str, _config: dict[str, object]) -> dict[str, object] | None:
+        content = files.get(path)
+        if content is None:
+            return None
+        return {"content": content, "sha": f"sha-{path}"}
+
+    def fake_put_file(
+        path: str,
+        content: bytes,
+        _message: str,
+        _config: dict[str, object],
+    ) -> dict[str, object]:
+        files[path] = content
+        return {"commit": {"sha": f"commit-{path}"}}
+
+    monkeypatch.setattr(operator_store, "_github_get_file", fake_get_file)
+    monkeypatch.setattr(operator_store, "_github_put_file", fake_put_file)
+    df = _sample_df("current_input")
+    df.loc[df["business_day_no"] == 8, "sales_actual_cum"] = 88.8
+
+    result = save_operator_sample("current_input", df)
+
+    assert result["ok"] is True
+    assert result["path"].startswith("github://locke-coder/sales-forecast-data-private@main/")
+    assert "operator_samples/current_input_sample.csv" in files
+    assert "operator_samples/metadata.json" in files
+    saved = pd.read_csv(io.BytesIO(files["operator_samples/current_input_sample.csv"]))
+    metadata = json.loads(files["operator_samples/metadata.json"].decode("utf-8"))
+    assert saved.loc[saved["business_day_no"] == 8, "sales_actual_cum"].iloc[0] == 88.8
+    assert metadata["current_input"]["source"] == "github_app_editor"

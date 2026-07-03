@@ -54,6 +54,7 @@ from src.forecast_models import (
 )
 from src.loader import load_input
 from src.operator_sample_store import (
+    get_operator_sample_location,
     get_operator_sample_path,
     get_packaged_sample_path,
     load_sample_with_source,
@@ -1226,7 +1227,7 @@ def _get_current_input_state() -> tuple[pd.DataFrame, str]:
 
     df, source_info = load_sample_with_source("current_input")
     _warn_operator_sample_fallback("현재 입력 샘플", source_info)
-    if source_info.get("source") == "operator":
+    if source_info.get("source") in {"operator", "github"}:
         source_label = OPERATOR_SAMPLE_SOURCE_LABEL
         prepared_df = df.copy()
     else:
@@ -1259,7 +1260,7 @@ def _get_historical_input_state() -> tuple[pd.DataFrame, str]:
     _warn_operator_sample_fallback("과거 샘플", source_info)
     source_label = (
         OPERATOR_SAMPLE_SOURCE_LABEL
-        if source_info.get("source") == "operator"
+        if source_info.get("source") in {"operator", "github"}
         else HISTORICAL_SAMPLE_INPUT_SOURCE_LABEL
     )
     _store_historical_input_state(historical_df, source_label)
@@ -9091,14 +9092,14 @@ def _render_operator_sample_panel(
     saved_at = str(metadata.get("saved_at") or metadata.get("reset_at") or "-")
     saved_rows = metadata.get("rows")
     saved_rows_display = "-" if saved_rows is None else str(saved_rows)
-    operator_path = get_operator_sample_path(kind)
+    operator_location = get_operator_sample_location(kind)
 
     status_cols = st.columns(4)
     status_cols[0].metric("현재 데이터 소스", source_display)
     status_cols[1].metric("마지막 저장 시각", saved_at)
     status_cols[2].metric("화면 row 수", str(len(df)))
     status_cols[3].metric("저장 row 수", saved_rows_display)
-    st.caption(f"운영 저장 파일: {_short_display_path(operator_path)}")
+    st.caption(f"운영 저장 위치: {_short_display_path(operator_location)}")
 
     editor_key = f"operator_sample_editor_{kind}"
     edited_df = st.data_editor(
@@ -9127,7 +9128,7 @@ def _render_operator_sample_panel(
             saved_metadata = dict(result.get("metadata") or {})
             st.success(
                 "운영 기본값 저장 완료: "
-                f"{_short_display_path(Path(str(result.get('path'))))} / "
+                f"{_short_display_path(str(result.get('path')))} / "
                 f"{saved_metadata.get('saved_at', '-')} / "
                 f"{result.get('rows', len(working_df))}행"
             )
@@ -9141,18 +9142,15 @@ def _render_operator_sample_panel(
         "저장된 운영 기본값 다시 불러오기",
         key=f"reload_operator_sample_{kind}",
     ):
-        if not operator_path.is_file():
-            st.warning("저장된 운영 기본값이 아직 없습니다.")
+        loaded_df, source_info = load_sample_with_source(kind)
+        if source_info.get("source") in {"operator", "github"}:
+            working_df = loaded_df
+            source_label = OPERATOR_SAMPLE_SOURCE_LABEL
+            _store_operator_sample_state(kind, working_df, source_label)
+            st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
         else:
-            loaded_df, source_info = load_sample_with_source(kind)
-            if source_info.get("source") == "operator":
-                working_df = loaded_df
-                source_label = OPERATOR_SAMPLE_SOURCE_LABEL
-                _store_operator_sample_state(kind, working_df, source_label)
-                st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
-            else:
-                st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
-                _render_operator_sample_warnings(source_info.get("warnings") or [])
+            st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
+            _render_operator_sample_warnings(source_info.get("warnings") or [])
 
     if packaged_col.button(
         "내장 샘플로 화면 초기화",
@@ -9231,7 +9229,11 @@ def _render_operator_sample_warnings(messages: object) -> None:
     st.warning("확인 필요: " + " / ".join(warning_messages))
 
 
-def _short_display_path(path: Path) -> str:
+def _short_display_path(path: str | Path) -> str:
+    if isinstance(path, str):
+        if path.startswith("github://") or len(path) <= 80:
+            return path
+        return f".../{path[-77:]}"
     try:
         return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
     except ValueError:
@@ -9306,7 +9308,7 @@ def _render_input_editor(
         result = save_current_input_defaults(normalized)
         saved_path = Path(str(result.get("saved_actuals_path")))
         operator_result = dict(result.get("operator_result") or {})
-        operator_path = Path(str(operator_result.get("path") or get_operator_sample_path("current_input")))
+        operator_path = str(operator_result.get("path") or get_operator_sample_path("current_input"))
         if result.get("ok"):
             st.session_state[CURRENT_INPUT_SOURCE_OVERRIDE_SESSION_KEY] = OPERATOR_SAMPLE_SOURCE_LABEL
             _store_current_input_state(normalized, OPERATOR_SAMPLE_SOURCE_LABEL)

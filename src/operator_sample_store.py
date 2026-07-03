@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from numbers import Real
 from pathlib import Path
@@ -23,10 +28,16 @@ OperatorSampleKind = Literal["current_input", "historical_input"]
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OPERATOR_SAMPLE_DIR = REPO_ROOT / "runtime_storage" / "operator_samples"
 OPERATOR_SAMPLE_DIR_ENV = "OPERATOR_SAMPLE_DIR"
+GITHUB_OPERATOR_SAMPLE_REPO_ENV = "GITHUB_OPERATOR_SAMPLE_REPO"
+GITHUB_OPERATOR_SAMPLE_TOKEN_ENV = "GITHUB_OPERATOR_SAMPLE_TOKEN"
+GITHUB_OPERATOR_SAMPLE_BRANCH_ENV = "GITHUB_OPERATOR_SAMPLE_BRANCH"
+GITHUB_OPERATOR_SAMPLE_PREFIX_ENV = "GITHUB_OPERATOR_SAMPLE_PREFIX"
+GITHUB_OPERATOR_SAMPLE_TIMEOUT_ENV = "GITHUB_OPERATOR_SAMPLE_TIMEOUT_SECONDS"
 METADATA_FILE_NAME = "metadata.json"
 BACKUP_DIR_NAME = "backups"
 BACKUP_KEEP_COUNT = 20
 APP_TIMEZONE = "Asia/Seoul"
+GITHUB_API_BASE_URL = "https://api.github.com"
 
 KIND_TO_OPERATOR_FILE = {
     "current_input": "current_input_sample.csv",
@@ -79,6 +90,15 @@ def get_operator_sample_path(kind: str) -> Path:
     return get_operator_sample_dir() / KIND_TO_OPERATOR_FILE[normalized_kind]
 
 
+def get_operator_sample_location(kind: str) -> str:
+    """Return the active operator sample location for UI display."""
+    normalized_kind = _validate_kind(kind)
+    config = _github_store_config()
+    if config["enabled"]:
+        return _github_display_path(config, _github_operator_file_path(normalized_kind, config))
+    return str(get_operator_sample_path(normalized_kind))
+
+
 def get_packaged_sample_path(kind: str) -> Path:
     """Return the packaged fallback CSV path for a sample kind."""
     normalized_kind = _validate_kind(kind)
@@ -92,6 +112,34 @@ def load_sample_with_source(kind: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     packaged_path = get_packaged_sample_path(normalized_kind)
     metadata = read_operator_metadata()
     fallback_warnings: list[str] = []
+    github_config = _github_store_config()
+
+    if github_config["enabled"]:
+        github_path = _github_operator_file_path(normalized_kind, github_config)
+        try:
+            github_file = _github_get_file(github_path, github_config)
+            if github_file is not None:
+                github_df = _load_sample_bytes(normalized_kind, github_file["content"])
+                errors = validate_operator_sample(normalized_kind, github_df)
+                if errors:
+                    fallback_warnings.extend(
+                        f"github operator sample validation failed: {message}"
+                        for message in errors
+                    )
+                else:
+                    return github_df, {
+                        "kind": normalized_kind,
+                        "source": "github",
+                        "path": _github_display_path(github_config, github_path),
+                        "metadata": dict(metadata.get(normalized_kind) or {}),
+                        "warnings": [],
+                    }
+            else:
+                fallback_warnings.append(
+                    f"github operator sample missing: {_github_display_path(github_config, github_path)}"
+                )
+        except Exception as exc:  # noqa: BLE001 - keep app startup recoverable.
+            fallback_warnings.append(f"github operator sample load failed: {exc}")
 
     if operator_path.is_file():
         try:
@@ -130,13 +178,31 @@ def save_operator_sample(kind: str, df: pd.DataFrame) -> dict[str, Any]:
     warnings = detect_sensitive_data_warnings(cleaned)
     warnings.extend(_date_order_warnings(cleaned))
     if errors:
+        github_config = _github_store_config()
+        error_path = (
+            _github_display_path(
+                github_config,
+                _github_operator_file_path(normalized_kind, github_config),
+            )
+            if github_config["enabled"]
+            else str(get_operator_sample_path(normalized_kind))
+        )
         return {
             "ok": False,
             "kind": normalized_kind,
             "errors": errors,
             "warnings": warnings,
-            "path": str(get_operator_sample_path(normalized_kind)),
+            "path": error_path,
         }
+
+    github_config = _github_store_config()
+    if github_config["enabled"]:
+        return _save_github_operator_sample(
+            normalized_kind,
+            cleaned,
+            warnings,
+            github_config,
+        )
 
     storage_dir = get_operator_sample_dir()
     storage_dir.mkdir(parents=True, exist_ok=True)
@@ -223,6 +289,13 @@ def create_backup_if_exists(kind: str) -> Path | None:
 
 def read_operator_metadata() -> dict[str, Any]:
     """Read operator sample metadata, returning an empty mapping when absent."""
+    github_config = _github_store_config()
+    if github_config["enabled"]:
+        try:
+            return _read_github_metadata(github_config)
+        except Exception:
+            return {}
+
     metadata_path = get_operator_sample_dir() / METADATA_FILE_NAME
     if not metadata_path.is_file():
         return {}
@@ -235,6 +308,11 @@ def read_operator_metadata() -> dict[str, Any]:
 
 def write_operator_metadata(metadata: dict[str, Any]) -> None:
     """Persist operator sample metadata atomically."""
+    github_config = _github_store_config()
+    if github_config["enabled"]:
+        _write_github_metadata(metadata, github_config)
+        return
+
     storage_dir = get_operator_sample_dir()
     storage_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = storage_dir / METADATA_FILE_NAME
@@ -263,6 +341,206 @@ def detect_sensitive_data_warnings(df: pd.DataFrame) -> list[str]:
                     f"{column}: {pattern_name} pattern detected in {match_count} row(s)."
                 )
     return warnings
+
+
+def _github_store_config() -> dict[str, Any]:
+    repo = _config_value(GITHUB_OPERATOR_SAMPLE_REPO_ENV)
+    token = _config_value(GITHUB_OPERATOR_SAMPLE_TOKEN_ENV)
+    branch = _config_value(GITHUB_OPERATOR_SAMPLE_BRANCH_ENV) or "main"
+    prefix = _config_value(GITHUB_OPERATOR_SAMPLE_PREFIX_ENV) or "operator_samples"
+    timeout_raw = _config_value(GITHUB_OPERATOR_SAMPLE_TIMEOUT_ENV)
+    try:
+        timeout = max(1, int(timeout_raw)) if timeout_raw else 10
+    except ValueError:
+        timeout = 10
+
+    repo_is_valid = bool(re.fullmatch(r"[\w.-]+/[\w.-]+", repo))
+    return {
+        "enabled": bool(repo_is_valid and token),
+        "repo": repo,
+        "token": token,
+        "branch": branch,
+        "prefix": prefix.strip("/"),
+        "timeout": timeout,
+    }
+
+
+def _config_value(name: str) -> str:
+    value = os.environ.get(name)
+    if value:
+        return value.strip()
+    try:
+        import streamlit as st_module  # type: ignore
+
+        raw_value = st_module.secrets.get(name, "")
+    except Exception:
+        return ""
+    return str(raw_value).strip()
+
+
+def _github_operator_file_path(kind: OperatorSampleKind, config: dict[str, Any]) -> str:
+    file_name = KIND_TO_OPERATOR_FILE[kind]
+    prefix = str(config.get("prefix") or "").strip("/")
+    return f"{prefix}/{file_name}" if prefix else file_name
+
+
+def _github_metadata_file_path(config: dict[str, Any]) -> str:
+    prefix = str(config.get("prefix") or "").strip("/")
+    return f"{prefix}/{METADATA_FILE_NAME}" if prefix else METADATA_FILE_NAME
+
+
+def _github_display_path(config: dict[str, Any], path: str) -> str:
+    return f"github://{config['repo']}@{config['branch']}/{path}"
+
+
+def _load_sample_bytes(kind: OperatorSampleKind, csv_bytes: bytes) -> pd.DataFrame:
+    temp_path: Path | None = None
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as handle:
+        handle.write(csv_bytes)
+        temp_path = Path(handle.name)
+    try:
+        return _load_sample_path(kind, temp_path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def _read_github_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    github_file = _github_get_file(_github_metadata_file_path(config), config)
+    if github_file is None:
+        return {}
+    payload = json.loads(github_file["content"].decode("utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_github_metadata(metadata: dict[str, Any], config: dict[str, Any]) -> None:
+    payload = json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8")
+    _github_put_file(
+        _github_metadata_file_path(config),
+        payload + b"\n",
+        "Update operator sample metadata",
+        config,
+    )
+
+
+def _save_github_operator_sample(
+    kind: OperatorSampleKind,
+    cleaned: pd.DataFrame,
+    warnings: list[str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    saved_df = _normalize_for_storage(cleaned)
+    metadata = _read_github_metadata(config)
+    previous = dict(metadata.get(kind) or {})
+    version = int(previous.get("version") or 0) + 1
+    entry: dict[str, Any] = {
+        "saved_at": _now_iso(),
+        "rows": int(len(saved_df)),
+        "source": "github_app_editor",
+        "version": version,
+        "repo": config["repo"],
+        "branch": config["branch"],
+    }
+    if kind == "historical_input":
+        entry["months"] = _month_labels(saved_df)
+
+    csv_path = _github_operator_file_path(kind, config)
+    csv_bytes = saved_df.to_csv(index=False).encode("utf-8-sig")
+    csv_result = _github_put_file(
+        csv_path,
+        csv_bytes,
+        f"Update {kind} operator sample",
+        config,
+    )
+
+    metadata[kind] = entry
+    _write_github_metadata(metadata, config)
+    return {
+        "ok": True,
+        "kind": kind,
+        "path": _github_display_path(config, csv_path),
+        "backup_path": None,
+        "metadata": entry,
+        "rows": int(len(saved_df)),
+        "warnings": warnings,
+        "df": saved_df,
+        "github_commit_sha": (csv_result.get("commit") or {}).get("sha"),
+    }
+
+
+def _github_get_file(path: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    api_path = _github_contents_api_path(config, path)
+    query = urllib.parse.urlencode({"ref": str(config["branch"])})
+    payload = _github_api_request("GET", f"{api_path}?{query}", config)
+    if payload is None:
+        return None
+    content_text = str(payload.get("content") or "")
+    content = base64.b64decode(content_text.encode("ascii"), validate=False)
+    return {
+        "content": content,
+        "sha": str(payload.get("sha") or ""),
+        "html_url": str(payload.get("html_url") or ""),
+    }
+
+
+def _github_put_file(
+    path: str,
+    content: bytes,
+    message: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    existing = _github_get_file(path, config)
+    body: dict[str, Any] = {
+        "message": message,
+        "content": base64.b64encode(content).decode("ascii"),
+        "branch": config["branch"],
+    }
+    if existing and existing.get("sha"):
+        body["sha"] = existing["sha"]
+    payload = _github_api_request("PUT", _github_contents_api_path(config, path), config, body)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _github_contents_api_path(config: dict[str, Any], path: str) -> str:
+    encoded_path = urllib.parse.quote(path, safe="/")
+    return f"/repos/{config['repo']}/contents/{encoded_path}"
+
+
+def _github_api_request(
+    method: str,
+    api_path: str,
+    config: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    url = f"{GITHUB_API_BASE_URL}{api_path}"
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {config['token']}",
+            "Content-Type": "application/json",
+            "User-Agent": "sales-closing-forecast",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=int(config["timeout"])) as response:
+            response_body = response.read()
+    except urllib.error.HTTPError as exc:
+        if method == "GET" and exc.code == 404:
+            return None
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API {method} failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"GitHub API {method} failed: {exc.reason}") from exc
+
+    if not response_body:
+        return {}
+    decoded = json.loads(response_body.decode("utf-8"))
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _validate_kind(kind: str) -> OperatorSampleKind:

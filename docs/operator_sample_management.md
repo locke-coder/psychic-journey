@@ -74,6 +74,29 @@ reset the local filesystem during redeploys or restarts. For durable production
 operation in those environments, use an external store such as a database, NAS,
 S3-compatible storage, or a controlled Google Sheet.
 
+## GitHub External Store
+
+For Streamlit Cloud-style hosting, the app can use a separate private GitHub
+repository as the operator sample store. Configure these Streamlit Secrets or
+environment variables:
+
+- `GITHUB_OPERATOR_SAMPLE_REPO`: for example `locke-coder/sales-forecast-data-private`
+- `GITHUB_OPERATOR_SAMPLE_TOKEN`: fine-grained token with Contents read/write on the data repo
+- `GITHUB_OPERATOR_SAMPLE_BRANCH`: defaults to `main`
+- `GITHUB_OPERATOR_SAMPLE_PREFIX`: defaults to `operator_samples`
+
+When configured, the app loads GitHub data before local runtime storage and
+packaged samples:
+
+```text
+operator_samples/current_input_sample.csv
+operator_samples/historical_input_sample.csv
+operator_samples/metadata.json
+```
+
+Use a private repository only. GitHub commit history keeps previous versions, so
+do not store unapproved personal or sensitive sales data there.
+
 ## Public Sharing
 
 Do not use real operational sales data in a public or externally shared app.
