@@ -54,13 +54,18 @@ from src.forecast_models import (
 )
 from src.loader import load_input
 from src.operator_sample_store import (
-    get_operator_sample_location,
     get_operator_sample_path,
     get_packaged_sample_path,
     load_sample_with_source,
     read_operator_metadata,
     save_operator_sample,
 )
+try:
+    from src.operator_sample_store import get_operator_sample_location
+except ImportError:  # pragma: no cover - tolerates transient Streamlit deploy cache skew.
+    def get_operator_sample_location(kind: str) -> str:
+        return str(get_operator_sample_path(kind))
+
 from src.history_store import append_forecast_history, build_forecast_history_rows
 from src.next_close import calculate_next_close_required
 from src.overachievement_models import (
