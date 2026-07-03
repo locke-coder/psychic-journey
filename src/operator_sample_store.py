@@ -254,6 +254,8 @@ def detect_sensitive_data_warnings(df: pd.DataFrame) -> list[str]:
         if pd.api.types.is_numeric_dtype(cleaned[column]):
             continue
         values = cleaned[column].dropna().astype(str)
+        if values.empty:
+            continue
         for pattern_name, pattern in SENSITIVE_PATTERNS:
             match_count = int(values.map(lambda value: bool(pattern.search(value))).sum())
             if match_count:

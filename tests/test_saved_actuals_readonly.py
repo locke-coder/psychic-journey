@@ -21,11 +21,12 @@ class _FakeColumnConfig:
 
 
 class _FakeStreamlit:
-    def __init__(self) -> None:
+    def __init__(self, clicked_keys: set[str] | None = None) -> None:
         self.session_state: dict[str, object] = {}
         self.column_config = _FakeColumnConfig()
         self.buttons: list[dict[str, object]] = []
         self.messages: list[str] = []
+        self.clicked_keys = clicked_keys or set()
 
     def header(self, body: object, **_: object) -> None:
         self.messages.append(str(body))
@@ -48,7 +49,7 @@ class _FakeStreamlit:
 
     def button(self, label: str, **kwargs: object) -> bool:
         self.buttons.append({"label": label, "disabled": bool(kwargs.get("disabled", False))})
-        return False
+        return str(kwargs.get("key") or "") in self.clicked_keys
 
     def data_editor(self, df: pd.DataFrame, **_: object) -> pd.DataFrame:
         return df.copy()
@@ -121,6 +122,31 @@ def test_save_saved_actuals_writes_only_when_called_explicitly(tmp_path: Path) -
     assert loaded.loc[0, "recognized_actual_cum"] == 77.7
 
 
+def test_save_current_input_defaults_promotes_full_input_to_operator_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    operator_dir = tmp_path / "operator_samples"
+    saved_path = tmp_path / "saved_actuals.csv"
+    df = load_input(app.SAMPLE_INPUT_PATH)
+    edited_df = df.copy()
+    edited_df.loc[edited_df["business_day_no"] == 8, "sales_actual_cum"] = 88.8
+    edited_df.loc[edited_df["business_day_no"] == 8, "recognized_actual_cum"] = 77.7
+    edited_df.loc[edited_df["business_day_no"] == 8, "sales_target_daily"] = 12.34
+    monkeypatch.setenv("OPERATOR_SAMPLE_DIR", str(operator_dir))
+
+    result = app.save_current_input_defaults(edited_df, saved_path)
+    loaded_df, source_info = app.load_sample_with_source("current_input")
+
+    loaded_row = loaded_df.loc[loaded_df["business_day_no"] == 8].iloc[0]
+    assert result["ok"] is True
+    assert saved_path.exists()
+    assert source_info["source"] == "operator"
+    assert loaded_row["sales_actual_cum"] == 88.8
+    assert loaded_row["recognized_actual_cum"] == 77.7
+    assert loaded_row["sales_target_daily"] == 12.34
+
+
 def test_current_input_state_labels_saved_actual_overlay(monkeypatch) -> None:
     fake_st = _FakeStreamlit()
     base_df = pd.DataFrame(
@@ -166,6 +192,32 @@ def test_current_input_state_labels_saved_actual_overlay(monkeypatch) -> None:
     assert app._sample_source_display_label(app.SAVED_ACTUALS_SOURCE_LABEL) == app.SAVED_ACTUALS_SOURCE_LABEL
     assert rendered_row["sales_actual_cum"] == 88.8
     assert rendered_row["recognized_actual_cum"] == 77.7
+
+
+def test_input_editor_save_marks_operator_default_source(monkeypatch, tmp_path: Path) -> None:
+    fake_st = _FakeStreamlit(clicked_keys={"save_saved_actuals_explicit"})
+    df = load_input(app.SAMPLE_INPUT_PATH)
+    operator_path = tmp_path / "operator_samples" / "current_input_sample.csv"
+
+    def fake_save_current_input_defaults(saved_df: pd.DataFrame) -> dict[str, object]:
+        return {
+            "ok": True,
+            "df": saved_df.copy(),
+            "saved_actuals_path": tmp_path / "saved_actuals.csv",
+            "operator_result": {"ok": True, "path": str(operator_path), "warnings": []},
+        }
+
+    monkeypatch.setattr(app, "st", fake_st)
+    monkeypatch.setattr(app, "save_current_input_defaults", fake_save_current_input_defaults)
+
+    rendered = app._render_input_editor(df, app.SAMPLE_INPUT_SOURCE_LABEL)
+
+    assert rendered.shape == df.shape
+    assert (
+        fake_st.session_state[app.CURRENT_INPUT_SOURCE_OVERRIDE_SESSION_KEY]
+        == app.OPERATOR_SAMPLE_SOURCE_LABEL
+    )
+    assert fake_st.session_state[app.CURRENT_INPUT_SOURCE_SESSION_KEY] == app.OPERATOR_SAMPLE_SOURCE_LABEL
 
 
 def test_uploaded_policy_can_run_readonly_without_rewriting_existing_store(tmp_path: Path) -> None:

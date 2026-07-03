@@ -163,7 +163,9 @@ def test_audit_readonly_mode_keeps_write_helpers_behind_disabled_buttons() -> No
     assert "audit_readonly" in input_source
     assert "완료월 실제 실적 저장" in input_source
     assert "disabled=audit_readonly" in input_source
-    assert input_source.index('"완료월 실제 실적 저장"') < input_source.index("save_actual_values(")
+    assert input_source.index('"완료월 실제 실적 저장"') < input_source.index(
+        "save_current_input_defaults("
+    )
     assert "disabled=audit_readonly" in history_source
     assert "disabled=audit_readonly" in excel_source
 

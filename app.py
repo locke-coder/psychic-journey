@@ -201,6 +201,7 @@ HISTORICAL_INPUT_TEMPLATE_SAMPLE_ROWS = (
 HISTORY_TAB_LABEL = "예측 이력 / Backtest"
 CURRENT_INPUT_DF_SESSION_KEY = "pace_current_input_df"
 CURRENT_INPUT_SOURCE_SESSION_KEY = "pace_current_input_source"
+CURRENT_INPUT_SOURCE_OVERRIDE_SESSION_KEY = "pace_current_input_source_override"
 HISTORICAL_INPUT_DF_SESSION_KEY = "pace_historical_input_df"
 HISTORICAL_INPUT_SOURCE_SESSION_KEY = "pace_historical_input_source"
 HISTORICAL_SAMPLE_DISABLED_SESSION_KEY = "pace_historical_sample_disabled"
@@ -3333,6 +3334,9 @@ def _render_input_data_page(
     )
     st.caption(f"입력 소스: {source_label}")
     df = _render_input_editor(df, source_label, audit_readonly=audit_readonly)
+    source_override = st.session_state.pop(CURRENT_INPUT_SOURCE_OVERRIDE_SESSION_KEY, None)
+    if isinstance(source_override, str) and source_override:
+        source_label = source_override
     _store_current_input_state(df, source_label)
     _store_historical_input_state(historical_df, historical_source_label)
 
@@ -6357,6 +6361,22 @@ def save_actual_values(
     return save_saved_actuals(saved_actuals, saved_path)
 
 
+def save_current_input_defaults(
+    df: pd.DataFrame,
+    path: str | Path = SAVED_ACTUALS_PATH,
+) -> dict[str, Any]:
+    """Persist edited current input values as restart defaults."""
+    normalized = normalize_direct_input_edits(df)
+    saved_actuals_path = save_actual_values(normalized, path)
+    operator_result = save_operator_sample("current_input", normalized)
+    return {
+        "ok": bool(operator_result.get("ok")),
+        "df": normalized,
+        "saved_actuals_path": saved_actuals_path,
+        "operator_result": operator_result,
+    }
+
+
 def apply_saved_actuals(
     df: pd.DataFrame,
     saved_actuals: pd.DataFrame,
@@ -8953,7 +8973,7 @@ def _render_file_upload() -> tuple[pd.DataFrame | None, str]:
     _render_input_template_download()
     st.caption(
         "업로드 파일은 현재 화면에 먼저 적용됩니다. 앱 리부트 후 기본 입력값으로 쓰려면 "
-        "운영 샘플 관리에서 현재 입력값을 운영 기본값으로 저장하세요."
+        "입력 수정 영역의 완료월 실제 실적 저장 버튼으로 현재 입력값을 저장하세요."
     )
     uploaded_file = st.file_uploader("입력 파일 업로드", type=["csv", "xlsx"])
     uploaded_name = getattr(uploaded_file, "name", None)
@@ -9236,13 +9256,13 @@ def _render_input_editor(
     )
     if default_source == "uploaded":
         st.caption(
-            "업로드 입력값을 현재 화면에 적용했습니다. 리부트 후 기본 입력값으로 유지하려면 "
-            "운영 샘플 관리에서 현재 입력값을 운영 기본값으로 저장하세요."
+            "업로드 입력값을 현재 화면에 적용했습니다. 완료월 실제 실적 저장 버튼을 누르면 "
+            "현재 입력표가 다음 시작 기본값으로 저장됩니다."
         )
     elif default_source == "saved":
         st.caption(
             f"저장된 실적 기본값 {len(saved_actuals)}건을 내장 샘플 위에 적용했습니다. "
-            "월 전체 입력표 기본값은 운영 기본값 저장본이 있을 때만 리부트 후에도 유지됩니다."
+            "완료월 실제 실적 저장 버튼을 누르면 현재 입력표가 다음 시작 기본값으로 저장됩니다."
         )
 
     editor_key = "direct_input_editor"
@@ -9283,11 +9303,26 @@ def _render_input_editor(
         key="save_saved_actuals_explicit",
         disabled=audit_readonly,
     ):
-        saved_path = save_actual_values(normalized)
-        st.success(
-            f"저장된 실적값을 갱신했습니다: {saved_path}. "
-            "리부트 기본 입력값까지 바꾸려면 운영 샘플 관리에서 현재 입력값을 운영 기본값으로 저장하세요."
-        )
+        result = save_current_input_defaults(normalized)
+        saved_path = Path(str(result.get("saved_actuals_path")))
+        operator_result = dict(result.get("operator_result") or {})
+        operator_path = Path(str(operator_result.get("path") or get_operator_sample_path("current_input")))
+        if result.get("ok"):
+            st.session_state[CURRENT_INPUT_SOURCE_OVERRIDE_SESSION_KEY] = OPERATOR_SAMPLE_SOURCE_LABEL
+            _store_current_input_state(normalized, OPERATOR_SAMPLE_SOURCE_LABEL)
+            st.success(
+                "현재 입력값을 다음 시작 기본값으로 저장했습니다: "
+                f"{_short_display_path(operator_path)}. "
+                f"실적 보조 저장 파일도 갱신했습니다: {_short_display_path(saved_path)}."
+            )
+            _render_operator_sample_warnings(operator_result.get("warnings") or [])
+        else:
+            st.warning(
+                "실적 보조 저장 파일은 갱신했지만, 리부트 기본 입력값 저장에는 실패했습니다. "
+                f"저장 파일: {_short_display_path(saved_path)}"
+            )
+            _render_operator_sample_errors(operator_result.get("errors") or [])
+            _render_operator_sample_warnings(operator_result.get("warnings") or [])
     return normalized
 
 
