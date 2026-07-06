@@ -205,6 +205,21 @@ def test_existing_operator_sample_is_backed_up_and_metadata_is_written(
     assert metadata["current_input"]["version"] == 2
 
 
+def test_read_operator_metadata_accepts_utf8_bom(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    operator_dir = _use_temp_operator_dir(tmp_path, monkeypatch)
+    operator_dir.mkdir(parents=True, exist_ok=True)
+    (operator_dir / "metadata.json").write_bytes(
+        b'\xef\xbb\xbf{"current_input":{"version":4,"source":"manual_seed"}}'
+    )
+
+    metadata = read_operator_metadata()
+
+    assert metadata["current_input"]["version"] == 4
+
+
 def test_operator_sample_dir_env_keeps_repo_runtime_storage_clean(
     tmp_path: Path,
     monkeypatch,
@@ -289,3 +304,46 @@ def test_github_operator_sample_save_updates_csv_and_metadata(
     metadata = json.loads(files["operator_samples/metadata.json"].decode("utf-8"))
     assert saved.loc[saved["business_day_no"] == 8, "sales_actual_cum"].iloc[0] == 88.8
     assert metadata["current_input"]["source"] == "github_app_editor"
+
+
+def test_github_operator_sample_save_accepts_metadata_with_utf8_bom(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _use_temp_operator_dir(tmp_path, monkeypatch)
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_REPO_ENV, "locke-coder/sales-forecast-data-private")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_TOKEN_ENV, "test-token")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_BRANCH_ENV, "main")
+    monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_PREFIX_ENV, "operator_samples")
+    files: dict[str, bytes] = {
+        "operator_samples/metadata.json": (
+            b'\xef\xbb\xbf{"current_input":{"version":4,"source":"manual_seed"}}'
+        )
+    }
+
+    def fake_get_file(path: str, _config: dict[str, object]) -> dict[str, object] | None:
+        content = files.get(path)
+        if content is None:
+            return None
+        return {"content": content, "sha": f"sha-{path}"}
+
+    def fake_put_file(
+        path: str,
+        content: bytes,
+        _message: str,
+        _config: dict[str, object],
+    ) -> dict[str, object]:
+        files[path] = content
+        return {"commit": {"sha": f"commit-{path}"}}
+
+    monkeypatch.setattr(operator_store, "_github_get_file", fake_get_file)
+    monkeypatch.setattr(operator_store, "_github_put_file", fake_put_file)
+
+    df = _complete_historical_df().head(2).copy()
+
+    result = save_operator_sample("current_input", df)
+
+    metadata = json.loads(files["operator_samples/metadata.json"].decode("utf-8"))
+    assert result["ok"] is True
+    assert result["metadata"]["version"] == 5
+    assert metadata["current_input"]["version"] == 5

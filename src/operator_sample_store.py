@@ -300,7 +300,7 @@ def read_operator_metadata() -> dict[str, Any]:
     if not metadata_path.is_file():
         return {}
     try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
@@ -409,7 +409,7 @@ def _read_github_metadata(config: dict[str, Any]) -> dict[str, Any]:
     github_file = _github_get_file(_github_metadata_file_path(config), config)
     if github_file is None:
         return {}
-    payload = json.loads(github_file["content"].decode("utf-8"))
+    payload = json.loads(github_file["content"].decode("utf-8-sig"))
     return payload if isinstance(payload, dict) else {}
 
 
