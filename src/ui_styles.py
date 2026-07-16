@@ -348,6 +348,24 @@ def get_global_styles() -> str:
         background: var(--dashboard-navy) !important;
     }
 
+    section[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"] {
+        border: 1px solid rgba(255, 255, 255, .28) !important;
+        border-radius: 7px !important;
+        background: rgba(255, 255, 255, .12) !important;
+        color: #ffffff !important;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, .18) !important;
+    }
+
+    section[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"]:hover {
+        border-color: #7fa4ff !important;
+        background: var(--brand-action) !important;
+        color: #ffffff !important;
+    }
+
+    section[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"] span {
+        color: inherit !important;
+    }
+
     section[data-testid="stSidebar"] .nav-brand {
         display: flex;
         align-items: center;
@@ -421,7 +439,7 @@ def get_global_styles() -> str:
 
     .same-window-top-status {
         grid-template-columns: minmax(180px, auto) minmax(0, 1fr) !important;
-        margin: 0 0 18px !important;
+        margin: 8px 0 18px !important;
         padding: 14px 18px !important;
         border-radius: 10px !important;
         background: #ffffff !important;
@@ -455,9 +473,177 @@ def get_global_styles() -> str:
     }
 
     div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) {
-        grid-template-columns: minmax(210px, .28fr) minmax(0, .72fr) !important;
+        grid-template-columns: calc((100% - 24px) / 3) minmax(0, 1fr) !important;
         gap: 12px !important;
         margin-top: 0 !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head)
+        > div[data-testid="stColumn"]:has(.home-side-stack)
+        > div[data-testid="stVerticalBlock"]
+        > div[data-testid="stElementContainer"]:has(.home-side-stack) {
+        display: flex !important;
+        flex: 1 1 auto !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head)
+        div[data-testid="stElementContainer"]:has(.home-side-stack)
+        > div[data-testid="stMarkdown"] {
+        display: flex !important;
+        flex: 1 1 auto !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head)
+        div[data-testid="stElementContainer"]:has(.home-side-stack)
+        > div[data-testid="stMarkdown"]
+        > div {
+        align-items: stretch !important;
+        flex: 1 1 auto !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head)
+        div[data-testid="stMarkdownContainer"]:has(.home-side-stack) {
+        flex: 1 1 auto !important;
+        height: auto !important;
+        margin-bottom: 0 !important;
+    }
+
+    .home-side-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: 100%;
+        height: 100%;
+    }
+
+    .achievement-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 132px;
+        align-items: center;
+        gap: 16px;
+        min-height: 194px;
+        padding: 16px 18px;
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 1px 2px rgba(20, 33, 61, .04);
+    }
+
+    .achievement-card__copy {
+        min-width: 0;
+    }
+
+    .achievement-card__eyebrow {
+        color: var(--brand-action);
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 1.2;
+    }
+
+    .achievement-card h2 {
+        margin: 4px 0 6px !important;
+        padding: 0 !important;
+        border: 0 !important;
+        color: var(--text-main) !important;
+        font-size: 17px !important;
+        font-weight: 800 !important;
+        line-height: 1.25 !important;
+        word-break: keep-all !important;
+        overflow-wrap: normal !important;
+    }
+
+    .achievement-card p {
+        margin: 0 0 10px !important;
+        color: var(--text-muted) !important;
+        font-size: 12px !important;
+        line-height: 1.5 !important;
+        word-break: keep-all;
+    }
+
+    .achievement-card__comparison {
+        display: inline-flex;
+        padding: 5px 8px;
+        border-radius: 6px;
+        background: #eef3ff;
+        color: var(--brand-action);
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.25;
+    }
+
+    .achievement-card.is-over .achievement-card__comparison {
+        background: #fff1e8;
+        color: #d65f16;
+    }
+
+    .achievement-donut {
+        position: relative;
+        display: grid;
+        place-items: center;
+        width: 132px;
+        height: 132px;
+        border-radius: 50%;
+    }
+
+    .achievement-donut::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: conic-gradient(#f47a2a 0 var(--excess-angle), transparent var(--excess-angle) 360deg);
+        -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+        mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+        transform: rotate(-90deg);
+    }
+
+    .achievement-donut__ring {
+        position: absolute;
+        inset: 10px;
+        border-radius: 50%;
+        background: conic-gradient(var(--brand-action) 0 var(--achievement-angle), #e7ecf4 var(--achievement-angle) 360deg);
+        transform: rotate(-90deg);
+    }
+
+    .achievement-donut__ring::after {
+        content: "";
+        position: absolute;
+        inset: 13px;
+        border-radius: 50%;
+        background: #ffffff;
+        box-shadow: inset 0 0 0 1px rgba(223, 229, 239, .7);
+    }
+
+    .achievement-donut__value {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        color: var(--text-main);
+    }
+
+    .achievement-donut__value strong {
+        font-size: 23px;
+        font-weight: 850;
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+    }
+
+    .achievement-card.is-over .achievement-donut__value strong {
+        color: #d65f16;
+    }
+
+    .achievement-donut__value span {
+        margin-top: 4px;
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .home-side-stack .decision-panel {
+        flex: 1 1 auto;
+        height: auto !important;
+        min-height: 0 !important;
     }
 
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head),
@@ -648,6 +834,15 @@ def get_global_styles() -> str:
         .same-window-top-status__meta {
             justify-content: flex-start;
         }
+
+        .achievement-card {
+            grid-template-columns: minmax(0, 1fr) 128px;
+        }
+
+        .achievement-donut {
+            width: 128px;
+            height: 128px;
+        }
     }
 
     @media (max-width: 620px) {
@@ -657,6 +852,14 @@ def get_global_styles() -> str:
 
         .unified-decision-strip {
             grid-template-columns: 1fr;
+        }
+
+        .achievement-card {
+            grid-template-columns: 1fr;
+        }
+
+        .achievement-donut {
+            margin: 0 auto;
         }
     }
     </style>

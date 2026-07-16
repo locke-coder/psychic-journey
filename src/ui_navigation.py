@@ -14,7 +14,7 @@ NAV_COLLAPSED_STATE_KEY = "pace_nav_collapsed"
 NAV_GROUPS = OrderedDict(
     (
         ("daily", {"title": "1. 일일 운영", "pages": ("home", "input", "forecast_strategy")}),
-        ("review", {"title": "2. 비교 · 보고", "pages": ("history", "raw_dashboard", "report")}),
+        ("review", {"title": "2. 비교 · 보고", "pages": ("history", "report")}),
         ("control", {"title": "3. 공유 · 검증", "pages": ("excel", "audit")}),
     )
 )
@@ -50,7 +50,7 @@ PAGE_DEFINITIONS = OrderedDict(
                 "short_title": "예측전략",
                 "group": "daily",
                 "subtitle": "F1/F2/F3 예측과 선택 시나리오, 운영전략을 한 흐름에서 판단합니다.",
-                "related": ("history", "raw_dashboard"),
+                "related": ("history", "report"),
                 "next_page": "report",
             },
         ),
@@ -61,18 +61,7 @@ PAGE_DEFINITIONS = OrderedDict(
                 "short_title": "이력",
                 "group": "review",
                 "subtitle": "완료월 예측 정확도, Backtest와 모델 신뢰도를 확인합니다.",
-                "related": ("raw_dashboard",),
-                "next_page": "report",
-            },
-        ),
-        (
-            "raw_dashboard",
-            {
-                "title": "N영업일 Raw 비교",
-                "short_title": "Raw비교",
-                "group": "review",
-                "subtitle": "HTM 기초자료를 동일 영업일차로 비교하며 예측 입력과 분리해 검증합니다.",
-                "related": ("history",),
+                "related": ("forecast_strategy", "report"),
                 "next_page": "report",
             },
         ),

@@ -1,4 +1,5 @@
 import inspect
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -83,6 +84,46 @@ def test_latest_excel_snapshot_reads_metadata_without_writing(tmp_path: Path) ->
     assert snapshot["파일명"].tolist() == ["daily_report_sales_20260612_v2.xlsx"]
     assert before_stat.st_mtime_ns == after_stat.st_mtime_ns
     assert before_stat.st_size == after_stat.st_size
+
+
+def test_latest_excel_artifact_status_uses_actual_newest_daily_report(tmp_path: Path) -> None:
+    latest_dir = tmp_path / "latest"
+    latest_dir.mkdir()
+    older_report = latest_dir / "daily_report_sales_20260610_v2.xlsx"
+    newer_report = latest_dir / "daily_report_sales_20260611_v2.xlsx"
+    reference = latest_dir / "reference_only.xlsx"
+    older_report.write_bytes(b"older")
+    newer_report.write_bytes(b"newer report")
+    reference.write_bytes(b"reference")
+    older_report.touch()
+    newer_report.touch()
+
+    status = app.get_latest_excel_artifact_status(latest_dir)
+
+    assert status["exists"] is True
+    assert status["file_name"] == "daily_report_sales_20260611_v2.xlsx"
+    assert status["size_bytes"] == len(b"newer report")
+
+
+def test_latest_audit_logs_select_newest_file_per_category(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    old_pytest = log_dir / "old_pytest.txt"
+    old_pytest.write_text("old", encoding="utf-8")
+    newest_pytest = log_dir / "latest_tests_before.txt"
+    newest_pytest.write_text("new", encoding="utf-8")
+    old_stat = old_pytest.stat()
+    os.utime(old_pytest, (old_stat.st_atime, old_stat.st_mtime - 60))
+    (log_dir / "latest_gate_before.json").write_text("{}", encoding="utf-8")
+    (log_dir / "latest_forbidden_scan.txt").write_text("0", encoding="utf-8")
+
+    logs = app.list_latest_audit_logs(log_dir, now=pd.Timestamp.now())
+
+    by_label = logs.set_index("검증 항목")
+    assert by_label.loc["pytest", "최근 저장 로그"] == newest_pytest.name
+    assert by_label.loc["Gate Runner", "최근 저장 로그"] == "latest_gate_before.json"
+    assert by_label.loc["금지 패턴", "최근 저장 로그"] == "latest_forbidden_scan.txt"
+    assert by_label.loc["outputs mtime", "상태"] == "확인 필요"
 
 
 def test_excel_detail_default_render_does_not_call_export(monkeypatch, tmp_path: Path) -> None:

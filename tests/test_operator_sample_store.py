@@ -306,7 +306,7 @@ def test_github_operator_sample_save_updates_csv_and_metadata(
     assert metadata["current_input"]["source"] == "github_app_editor"
 
 
-def test_github_operator_sample_save_accepts_metadata_with_utf8_bom(
+def test_github_operator_sample_save_accepts_metadata_with_repeated_utf8_bom(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -317,7 +317,7 @@ def test_github_operator_sample_save_accepts_metadata_with_utf8_bom(
     monkeypatch.setenv(operator_store.GITHUB_OPERATOR_SAMPLE_PREFIX_ENV, "operator_samples")
     files: dict[str, bytes] = {
         "operator_samples/metadata.json": (
-            b'\xef\xbb\xbf{"current_input":{"version":4,"source":"manual_seed"}}'
+            b'\xef\xbb\xbf\xef\xbb\xbf{"current_input":{"version":4,"source":"manual_seed"}}'
         )
     }
 

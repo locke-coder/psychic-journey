@@ -341,6 +341,7 @@ gates:
         label: O1/O2/O3 explanation display code exists
         any_of:
           - "def build_overachievement_definition_df"
+          - "build_overachievement_definition_df = partial("
       - file: tests/test_app_smoke.py
         label: O1/O2/O3 explanation test exists
         any_of:

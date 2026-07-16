@@ -179,6 +179,16 @@ def test_g15_declares_streamlit_app_audit_requirements() -> None:
         "목표 초과 예상 report phrase source exists",
     } <= pattern_labels
 
+    overachievement_requirement = next(
+        requirement
+        for requirement in g15["required_test_patterns"]
+        if requirement["label"] == "O1/O2/O3 explanation display code exists"
+    )
+    assert {
+        "def build_overachievement_definition_df",
+        "build_overachievement_definition_df = partial(",
+    } <= set(overachievement_requirement["any_of"])
+
 
 def test_g18_declares_final_audit_requirements() -> None:
     catalog = gate_runner.load_catalog()

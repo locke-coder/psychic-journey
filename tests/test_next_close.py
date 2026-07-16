@@ -9,7 +9,7 @@ from src.next_close import calculate_next_close_required
 
 
 def _sample_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "data" / "sample" / "input_sample.csv"
+    return Path(__file__).resolve().parent / "fixtures" / "input_sample_2026_06.csv"
 
 
 def _sample_df() -> pd.DataFrame:

@@ -1,11 +1,14 @@
 from src.ui_navigation import (
+    NAV_GROUPS,
     PAGE_ALIASES,
     PAGE_DEFINITIONS,
     get_current_page,
     nav_item_class,
+    page_subtitle,
     page_title,
     render_nav_item_html,
     render_nav_rail_html,
+    render_page_flow_html,
     render_page_header_html,
     validate_page_key,
 )
@@ -72,11 +75,46 @@ def test_visible_nav_exposes_unified_forecast_strategy_once() -> None:
     assert "시나리오" not in visible_titles
 
 
+def test_navigation_groups_cover_every_page_once_in_workflow_order() -> None:
+    grouped_pages = [
+        page_key
+        for group in NAV_GROUPS.values()
+        for page_key in group["pages"]
+    ]
+
+    assert grouped_pages == list(PAGE_DEFINITIONS)
+    assert len(grouped_pages) == len(set(grouped_pages))
+    assert [group["title"] for group in NAV_GROUPS.values()] == [
+        "1. 일일 운영",
+        "2. 비교 · 보고",
+        "3. 공유 · 검증",
+    ]
+
+
+def test_page_metadata_connects_related_tabs_and_next_step() -> None:
+    for page_key, definition in PAGE_DEFINITIONS.items():
+        assert definition["group"] in NAV_GROUPS
+        assert page_subtitle(page_key)
+        assert definition["next_page"] in PAGE_DEFINITIONS
+        assert all(key in PAGE_DEFINITIONS for key in definition["related"])
+
+    flow_html = render_page_flow_html("forecast_strategy")
+    assert "함께 보기" in flow_html
+    assert "?page=history" in flow_html
+    assert "?page=report" in flow_html
+
+
 def test_nav_rail_and_page_header_render_without_streamlit() -> None:
     nav_html = render_nav_rail_html("home")
     header_html = render_page_header_html("forecast", subtitle="detail")
 
     assert "nav-rail" in nav_html
     assert "nav-item active" in nav_html
+    assert "1. 일일 운영" in nav_html
+    assert "2. 비교 · 보고" in nav_html
+    assert "3. 공유 · 검증" in nav_html
     assert "page-header" in header_html
     assert "예측 · 전략 통합" in header_html
+    assert "1. 일일 운영" in header_html
+    assert "함께 보기" in header_html
+    assert "다음 단계" in header_html

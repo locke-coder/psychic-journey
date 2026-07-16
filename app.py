@@ -12,6 +12,7 @@ from functools import partial
 from html import escape
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 import altair as alt
 import pandas as pd
@@ -1336,10 +1337,6 @@ def _build_page_context(base_config: dict[str, Any]) -> dict[str, Any]:
         "historical_source_label": historical_source_label,
         "metric": metric,
         "as_of_date": as_of_date,
-        "raw_dashboard_selected_business_day_no": _projection_current_day_no(
-            df,
-            as_of_date,
-        ),
         "forecast_choice": forecast_choice,
         "provision_choice": provision_choice,
         "config": config,
@@ -1649,9 +1646,18 @@ def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
         next_close_result,
     )
 
-    decision_col, chart_col = st.columns([0.28, 0.72], gap="large")
-    with decision_col:
-        _render_home_decision_panel(selected_row, validation_result, next_close_result)
+    insight_col, chart_col = st.columns([1, 2], gap="small")
+    with insight_col:
+        achievement_card_html = _build_home_achievement_donut_html(
+            selected_row,
+            validation_result,
+        )
+        _render_home_decision_panel(
+            selected_row,
+            validation_result,
+            next_close_result,
+            achievement_card_html=achievement_card_html,
+        )
     with chart_col:
         _render_projection_chart_card(context)
 
@@ -2172,6 +2178,8 @@ def _render_home_decision_panel(
     selected_row: pd.Series,
     validation_result: Mapping[str, Any],
     next_close_result: Mapping[str, Any],
+    *,
+    achievement_card_html: str = "",
 ) -> None:
     target_status = selected_row.get("target_status")
     scenario_id = str(selected_row.get("scenario_id") or "")
@@ -2191,13 +2199,69 @@ def _render_home_decision_panel(
         "</div>"
         for label, value in decision_rows
     )
-    st.markdown(
+    panel_html = (
         '<aside class="decision-panel">'
         '<div class="decision-panel__label">Next Action Panel</div>'
         '<h2>오늘의 운영 판단</h2>'
         f"{rows_html}"
-        "</aside>",
+        "</aside>"
+    )
+    st.markdown(
+        '<div class="home-side-stack">'
+        f"{achievement_card_html}"
+        f"{panel_html}"
+        "</div>",
         unsafe_allow_html=True,
+    )
+
+
+def _build_home_achievement_donut_html(
+    selected_row: pd.Series,
+    validation_result: Mapping[str, Any],
+) -> str:
+    """Build a forecast achievement donut with a separate excess ring."""
+    forecast = _as_float(selected_row.get("forecast_after_provision"))
+    monthly_target = _as_float(
+        selected_row.get("monthly_target", validation_result.get("monthly_target"))
+    )
+    achievement_rate = safe_divide(forecast, monthly_target)
+    if not math.isfinite(achievement_rate) or monthly_target <= 0:
+        rate_percent = 0.0
+        rate_label = "계산 대기"
+        comparison_label = "월 목표와 예상 실적 입력 후 표시"
+        state_class = "is-pending"
+    else:
+        rate_percent = max(0.0, achievement_rate * 100.0)
+        rate_label = f"{rate_percent:.1f}%"
+        if rate_percent > 100.0:
+            comparison_label = f"목표 초과 +{rate_percent - 100.0:.1f}%p"
+            state_class = "is-over"
+        elif math.isclose(rate_percent, 100.0, abs_tol=0.05):
+            comparison_label = "월 목표 100% 도달"
+            state_class = "is-complete"
+        else:
+            comparison_label = f"목표까지 {100.0 - rate_percent:.1f}%p"
+            state_class = "is-under"
+
+    base_angle = min(rate_percent, 100.0) * 3.6
+    excess_angle = min(max(rate_percent - 100.0, 0.0), 100.0) * 3.6
+    return (
+        f'<section class="achievement-card {state_class}" '
+        f'style="--achievement-angle:{base_angle:.2f}deg;--excess-angle:{excess_angle:.2f}deg">'
+        '<div class="achievement-card__copy">'
+        '<div class="achievement-card__eyebrow">Achievement Rate</div>'
+        '<h2>월말 예상 달성률</h2>'
+        '<p>월 전체 목표 대비 현재 선택 전략의 예상 도착 수준입니다.</p>'
+        f'<strong class="achievement-card__comparison">{escape(comparison_label)}</strong>'
+        '</div>'
+        '<div class="achievement-donut" aria-label="월말 예상 달성률">'
+        '<div class="achievement-donut__ring"></div>'
+        '<div class="achievement-donut__value">'
+        f'<strong>{escape(rate_label)}</strong>'
+        '<span>예상 달성</span>'
+        '</div>'
+        '</div>'
+        '</section>'
     )
 
 
@@ -4410,6 +4474,9 @@ def _scenario_grid_column_check_df(scenario_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _require_access_password() -> bool:
+    if _is_local_access():
+        return True
+
     configured_password, configured_password_hash = _configured_access_credentials()
     is_configured = bool(configured_password or configured_password_hash)
     if st.session_state.get(ACCESS_SESSION_STATE_KEY) and is_configured:
@@ -4444,6 +4511,24 @@ def _require_access_password() -> bool:
         st.error("비밀번호가 일치하지 않습니다.")
 
     return False
+
+
+def _is_local_access() -> bool:
+    """Allow the local preview while preserving the gate on shared URLs."""
+    if st is None or not hasattr(st, "context"):
+        return False
+    try:
+        return _is_local_url(st.context.url)
+    except Exception:  # noqa: BLE001 - context is unavailable outside a live request.
+        return False
+
+
+def _is_local_url(url: object) -> bool:
+    try:
+        hostname = urlparse(str(url or "")).hostname
+    except ValueError:
+        return False
+    return str(hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _render_access_logout() -> None:

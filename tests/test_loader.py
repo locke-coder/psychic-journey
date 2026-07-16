@@ -24,7 +24,7 @@ def test_input_sample_loads_successfully() -> None:
     df = load_input(_sample_path())
 
     assert list(df.columns) == list(REQUIRED_INPUT_COLUMNS)
-    assert len(df) == 18
+    assert len(df) == 20
     assert pd.api.types.is_datetime64_any_dtype(df["date"])
     assert pd.api.types.is_integer_dtype(df["business_day_no"])
     assert pd.api.types.is_bool_dtype(df["is_close_day"])
@@ -103,9 +103,9 @@ def test_cp949_csv_file_can_be_loaded_without_korean_text_breaking(tmp_path: Pat
     loaded = load_input(input_path)
 
     second_business_day = loaded.loc[loaded["business_day_no"] == 2].iloc[0]
-    assert second_business_day["day_name"] == "화"
+    assert second_business_day["day_name"] == "목"
     assert second_business_day["close_type"] == "일반"
-    assert second_business_day["sales_actual_cum"] == pytest.approx(45.8)
+    assert second_business_day["sales_actual_cum"] == pytest.approx(51.0)
 
 
 def test_utf8_bom_csv_file_can_be_loaded(tmp_path: Path) -> None:
@@ -116,13 +116,13 @@ def test_utf8_bom_csv_file_can_be_loaded(tmp_path: Path) -> None:
     loaded = load_input(input_path)
 
     assert list(loaded.columns) == list(REQUIRED_INPUT_COLUMNS)
-    assert loaded.loc[0, "day_name"] == "월"
+    assert loaded.loc[0, "day_name"] == "수"
 
 
 def test_future_blank_actual_cum_values_are_allowed_as_nan() -> None:
     df = load_input(_sample_path())
     future_actuals = df.loc[
-        df["business_day_no"] > 7,
+        df["business_day_no"] > 9,
         ["sales_actual_cum", "recognized_actual_cum"],
     ]
 
@@ -138,6 +138,34 @@ def test_missing_required_column_raises_value_error(tmp_path: Path) -> None:
         load_input(input_path)
 
 
+def test_invalid_date_value_raises_actionable_error(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "date": ["2026-07-01", "2026-07-02 Thu"],
+            "day_name": ["Wed", "Thu"],
+            "business_day_no": [1, 2],
+            "is_close_day": ["Y", "N"],
+            "close_type": ["month_start", "normal"],
+            "sales_target_daily": [35.0, 2.5],
+            "recognized_target_daily": [32.0, 2.3],
+            "sales_actual_cum": [pd.NA, pd.NA],
+            "recognized_actual_cum": [pd.NA, pd.NA],
+            "memo": ["", ""],
+        }
+    )
+    input_path = tmp_path / "invalid_date.csv"
+    df.to_csv(input_path, index=False)
+
+    with pytest.raises(ValueError) as exc_info:
+        load_input(input_path)
+
+    message = str(exc_info.value)
+    assert "date contains invalid values" in message
+    assert "YYYY-MM-DD" in message
+    assert "row 3" in message
+    assert "2026-07-02" in message
+
+
 def test_xlsx_file_can_be_loaded_after_csv_round_trip(tmp_path: Path) -> None:
     df = pd.read_csv(_sample_path())
     xlsx_path = tmp_path / "input_sample.xlsx"
@@ -147,7 +175,7 @@ def test_xlsx_file_can_be_loaded_after_csv_round_trip(tmp_path: Path) -> None:
 
     assert list(loaded.columns) == list(REQUIRED_INPUT_COLUMNS)
     assert len(loaded) == len(df)
-    assert loaded.loc[0, "date"] == pd.Timestamp("2026-06-01")
+    assert loaded.loc[0, "date"] == pd.Timestamp("2026-07-01")
     assert loaded["sales_actual_cum"].isna().sum() == 11
 
 

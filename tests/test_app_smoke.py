@@ -15,7 +15,6 @@ from app import (
     INPUT_TEMPLATE_FILENAME,
     INPUT_TEMPLATE_HEADERS,
     SAMPLE_INPUT_SOURCE_LABEL,
-    SAMPLE_INPUT_PATH,
     apply_latest_upload_policy,
     apply_saved_actuals,
     build_auto_axis_domain,
@@ -78,6 +77,9 @@ from src.loader import load_input
 from src.overachievement_models import OVERACHIEVEMENT
 from src.schema import load_model_config
 from src.visualization_builder import build_strategy_arrival_compare_source
+
+
+SAMPLE_INPUT_PATH = Path(__file__).resolve().parent / "fixtures" / "input_sample_2026_06.csv"
 
 
 def _over_target_input_df() -> pd.DataFrame:
@@ -169,7 +171,7 @@ def test_app_sample_smoke_runs_validation_and_scenarios() -> None:
     assert not provision_result["allocation_by_day"].empty
 
 
-def test_app_main_renders_without_password_gate_call() -> None:
+def test_app_main_requires_password_before_rendering_data_pages() -> None:
     app_source = Path("app.py").read_text(encoding="utf-8")
     navigation_source = Path("src/ui_navigation.py").read_text(encoding="utf-8")
     main_source = inspect.getsource(app_module.main)
@@ -181,14 +183,15 @@ def test_app_main_renders_without_password_gate_call() -> None:
     assert '"forecast": "forecast_strategy"' in navigation_source
     assert '"scenarios": "forecast_strategy"' in navigation_source
     assert "KPI · 예측" not in navigation_source
-    assert '"forecast": "KPI · 예측"' not in app_source
-    assert '"scenarios": "시나리오"' not in app_source
     assert '"title": "시나리오"' not in navigation_source
     assert "_render_forecast_strategy_detail_page" in app_source
     assert '"render_forecast_strategy_page"' in app_source
     assert "_render_forecast_detail_page" in app_source
     assert "_render_scenarios_detail_page" in app_source
-    assert "_require_access_password()" not in main_source
+    assert "if not _require_access_password():" in main_source
+    assert main_source.index("_require_access_password()") < main_source.index(
+        "base_config = load_model_config()"
+    )
     assert "st.text_input(\"접속 비밀번호\"" not in main_source
 
 

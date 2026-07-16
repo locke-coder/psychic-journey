@@ -24,13 +24,13 @@ def test_input_sample_loads_with_expected_input_shape() -> None:
 
     assert sample_path.is_file()
     assert list(df.columns) == EXPECTED_COLUMNS
-    assert len(df) == 18
+    assert len(df) == 20
     assert "sales_actual_daily" not in df.columns
     assert "recognized_actual_daily" not in df.columns
-    assert set(df["is_close_day"]) == {"Y", "N"}
+    assert set(df["is_close_day"]) == {True, False}
 
     dates = pd.to_datetime(df["date"], format="%Y-%m-%d")
-    as_of_date = pd.Timestamp("2026-06-10")
+    as_of_date = pd.Timestamp("2026-07-13")
 
     as_of_actuals = df.loc[
         dates == as_of_date,

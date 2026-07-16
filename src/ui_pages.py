@@ -24,7 +24,6 @@ from src.ui_components import (
     status_label,
 )
 from src.ui_navigation import render_page_header_html, validate_page_key
-from src.ui_pages_raw_dashboard import render_raw_dashboard_page
 
 
 def render_page(page_key: object, context: Mapping[str, Any]) -> None:
@@ -36,7 +35,6 @@ def render_page(page_key: object, context: Mapping[str, Any]) -> None:
         "forecast_strategy": render_forecast_strategy_page,
         "report": render_report_page,
         "history": render_history_page,
-        "raw_dashboard": render_raw_dashboard_page,
         "excel": render_excel_page,
         "audit": render_audit_page,
     }.get(key, render_home_page)
