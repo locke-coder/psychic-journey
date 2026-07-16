@@ -280,17 +280,16 @@ def test_github_operator_sample_save_updates_csv_and_metadata(
             return None
         return {"content": content, "sha": f"sha-{path}"}
 
-    def fake_put_file(
-        path: str,
-        content: bytes,
+    def fake_atomic_write(
+        atomic_files: dict[str, bytes],
         _message: str,
-        _config: dict[str, object],
     ) -> dict[str, object]:
-        files[path] = content
-        return {"commit": {"sha": f"commit-{path}"}}
+        for path, content in atomic_files.items():
+            files[f"operator_samples/{path}"] = content
+        return {"commit": {"sha": "commit-operator-data"}}
 
     monkeypatch.setattr(operator_store, "_github_get_file", fake_get_file)
-    monkeypatch.setattr(operator_store, "_github_put_file", fake_put_file)
+    monkeypatch.setattr(operator_store, "write_private_data_files_atomic", fake_atomic_write)
     df = _sample_df("current_input")
     df.loc[df["business_day_no"] == 8, "sales_actual_cum"] = 88.8
 
@@ -327,17 +326,16 @@ def test_github_operator_sample_save_accepts_metadata_with_repeated_utf8_bom(
             return None
         return {"content": content, "sha": f"sha-{path}"}
 
-    def fake_put_file(
-        path: str,
-        content: bytes,
+    def fake_atomic_write(
+        atomic_files: dict[str, bytes],
         _message: str,
-        _config: dict[str, object],
     ) -> dict[str, object]:
-        files[path] = content
-        return {"commit": {"sha": f"commit-{path}"}}
+        for path, content in atomic_files.items():
+            files[f"operator_samples/{path}"] = content
+        return {"commit": {"sha": "commit-operator-data"}}
 
     monkeypatch.setattr(operator_store, "_github_get_file", fake_get_file)
-    monkeypatch.setattr(operator_store, "_github_put_file", fake_put_file)
+    monkeypatch.setattr(operator_store, "write_private_data_files_atomic", fake_atomic_write)
 
     df = _complete_historical_df().head(2).copy()
 

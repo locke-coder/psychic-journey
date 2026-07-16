@@ -1,6 +1,7 @@
 __pycache__/
 .pytest_cache/
 outputs/*.xlsx
+outputs/**/*.xlsx
 outputs/saved_actuals.csv
 outputs/streamlit_deploy_source/
 outputs/streamlit_deploy_source.zip

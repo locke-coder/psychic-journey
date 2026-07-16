@@ -121,11 +121,13 @@ For Streamlit Cloud-style hosting without a persistent filesystem, use a
 separate private GitHub data repository:
 
 ```toml
-GITHUB_OPERATOR_SAMPLE_REPO = "locke-coder/sales-forecast-data-private"
-GITHUB_OPERATOR_SAMPLE_BRANCH = "main"
-GITHUB_OPERATOR_SAMPLE_PREFIX = "operator_samples"
-GITHUB_OPERATOR_SAMPLE_TOKEN = "github_pat_or_fine_grained_token"
+PRIVATE_DATA_REPO = "owner/private-data-repo"
+PRIVATE_DATA_BRANCH = "main"
+PRIVATE_DATA_PREFIX = "operator_samples"
+PRIVATE_DATA_TOKEN = "replace_me"
 ```
+
+The legacy `GITHUB_OPERATOR_SAMPLE_*` names remain supported during migration.
 
 The token must be stored only in Streamlit Secrets or an approved secret manager
 and should have Contents read/write access only to the private data repository.

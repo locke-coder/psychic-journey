@@ -14,12 +14,19 @@ import urllib.request
 from datetime import datetime
 from numbers import Real
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from src.loader import load_input
+from src.private_data_store import (
+    PrivateDataStoreConfigurationError,
+    PrivateDataStoreConflictError,
+    PrivateDataStoreUnavailableError,
+    get_private_data_store_config,
+    write_private_data_files_atomic,
+)
 from src.schema import REQUIRED_INPUT_COLUMNS
 
 
@@ -94,6 +101,8 @@ def get_operator_sample_location(kind: str) -> str:
     """Return the active operator sample location for UI display."""
     normalized_kind = _validate_kind(kind)
     config = _github_store_config()
+    if config["error"]:
+        raise PrivateDataStoreConfigurationError(str(config["error"]))
     if config["enabled"]:
         return _github_display_path(config, _github_operator_file_path(normalized_kind, config))
     return str(get_operator_sample_path(normalized_kind))
@@ -110,36 +119,32 @@ def load_sample_with_source(kind: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     normalized_kind = _validate_kind(kind)
     operator_path = get_operator_sample_path(normalized_kind)
     packaged_path = get_packaged_sample_path(normalized_kind)
-    metadata = read_operator_metadata()
     fallback_warnings: list[str] = []
     github_config = _github_store_config()
+    if github_config["error"]:
+        raise PrivateDataStoreConfigurationError(str(github_config["error"]))
+    metadata = read_operator_metadata()
 
     if github_config["enabled"]:
         github_path = _github_operator_file_path(normalized_kind, github_config)
-        try:
-            github_file = _github_get_file(github_path, github_config)
-            if github_file is not None:
-                github_df = _load_sample_bytes(normalized_kind, github_file["content"])
-                errors = validate_operator_sample(normalized_kind, github_df)
-                if errors:
-                    fallback_warnings.extend(
-                        f"github operator sample validation failed: {message}"
-                        for message in errors
-                    )
-                else:
-                    return github_df, {
-                        "kind": normalized_kind,
-                        "source": "github",
-                        "path": _github_display_path(github_config, github_path),
-                        "metadata": dict(metadata.get(normalized_kind) or {}),
-                        "warnings": [],
-                    }
-            else:
-                fallback_warnings.append(
-                    f"github operator sample missing: {_github_display_path(github_config, github_path)}"
-                )
-        except Exception as exc:  # noqa: BLE001 - keep app startup recoverable.
-            fallback_warnings.append(f"github operator sample load failed: {exc}")
+        github_file = _github_get_file(github_path, github_config)
+        if github_file is None:
+            raise PrivateDataStoreUnavailableError(
+                f"required private operator sample is missing: {KIND_TO_OPERATOR_FILE[normalized_kind]}"
+            )
+        github_df = _load_sample_bytes(normalized_kind, github_file["content"])
+        errors = validate_operator_sample(normalized_kind, github_df)
+        if errors:
+            raise PrivateDataStoreUnavailableError(
+                "private operator sample failed validation: " + "; ".join(errors)
+            )
+        return github_df, {
+            "kind": normalized_kind,
+            "source": "github",
+            "path": _github_display_path(github_config, github_path),
+            "metadata": dict(metadata.get(normalized_kind) or {}),
+            "warnings": [],
+        }
 
     if operator_path.is_file():
         try:
@@ -170,7 +175,12 @@ def load_sample_with_source(kind: str) -> tuple[pd.DataFrame, dict[str, Any]]:
     }
 
 
-def save_operator_sample(kind: str, df: pd.DataFrame) -> dict[str, Any]:
+def save_operator_sample(
+    kind: str,
+    df: pd.DataFrame,
+    *,
+    related_private_files: Mapping[str, bytes] | None = None,
+) -> dict[str, Any]:
     """Validate and persist an operator sample with backup and metadata."""
     normalized_kind = _validate_kind(kind)
     cleaned = _prepare_operator_sample(df)
@@ -196,12 +206,15 @@ def save_operator_sample(kind: str, df: pd.DataFrame) -> dict[str, Any]:
         }
 
     github_config = _github_store_config()
+    if github_config["error"]:
+        raise PrivateDataStoreConfigurationError(str(github_config["error"]))
     if github_config["enabled"]:
         return _save_github_operator_sample(
             normalized_kind,
             cleaned,
             warnings,
             github_config,
+            related_private_files=related_private_files,
         )
 
     storage_dir = get_operator_sample_dir()
@@ -250,6 +263,13 @@ def validate_operator_sample(kind: str, df: pd.DataFrame) -> list[str]:
 def reset_operator_sample(kind: str) -> dict[str, Any]:
     """Remove an operator sample so the packaged sample becomes the default."""
     normalized_kind = _validate_kind(kind)
+    github_config = _github_store_config()
+    if github_config["error"]:
+        raise PrivateDataStoreConfigurationError(str(github_config["error"]))
+    if github_config["enabled"]:
+        raise PrivateDataStoreConfigurationError(
+            "remote operator samples cannot fall back to packaged data; save a replacement instead"
+        )
     target_path = get_operator_sample_path(normalized_kind)
     backup_path = create_backup_if_exists(normalized_kind)
     if target_path.exists():
@@ -290,11 +310,10 @@ def create_backup_if_exists(kind: str) -> Path | None:
 def read_operator_metadata() -> dict[str, Any]:
     """Read operator sample metadata, returning an empty mapping when absent."""
     github_config = _github_store_config()
+    if github_config["error"]:
+        raise PrivateDataStoreConfigurationError(str(github_config["error"]))
     if github_config["enabled"]:
-        try:
-            return _read_github_metadata(github_config)
-        except Exception:
-            return {}
+        return _read_github_metadata(github_config)
 
     metadata_path = get_operator_sample_dir() / METADATA_FILE_NAME
     if not metadata_path.is_file():
@@ -308,6 +327,8 @@ def read_operator_metadata() -> dict[str, Any]:
 def write_operator_metadata(metadata: dict[str, Any]) -> None:
     """Persist operator sample metadata atomically."""
     github_config = _github_store_config()
+    if github_config["error"]:
+        raise PrivateDataStoreConfigurationError(str(github_config["error"]))
     if github_config["enabled"]:
         _write_github_metadata(metadata, github_config)
         return
@@ -343,24 +364,16 @@ def detect_sensitive_data_warnings(df: pd.DataFrame) -> list[str]:
 
 
 def _github_store_config() -> dict[str, Any]:
-    repo = _config_value(GITHUB_OPERATOR_SAMPLE_REPO_ENV)
-    token = _config_value(GITHUB_OPERATOR_SAMPLE_TOKEN_ENV)
-    branch = _config_value(GITHUB_OPERATOR_SAMPLE_BRANCH_ENV) or "main"
-    prefix = _config_value(GITHUB_OPERATOR_SAMPLE_PREFIX_ENV) or "operator_samples"
-    timeout_raw = _config_value(GITHUB_OPERATOR_SAMPLE_TIMEOUT_ENV)
-    try:
-        timeout = max(1, int(timeout_raw)) if timeout_raw else 10
-    except ValueError:
-        timeout = 10
-
-    repo_is_valid = bool(re.fullmatch(r"[\w.-]+/[\w.-]+", repo))
+    config = get_private_data_store_config()
     return {
-        "enabled": bool(repo_is_valid and token),
-        "repo": repo,
-        "token": token,
-        "branch": branch,
-        "prefix": prefix.strip("/"),
-        "timeout": timeout,
+        "enabled": config.enabled,
+        "configured": config.configured,
+        "error": config.error,
+        "repo": config.repo,
+        "token": config.token,
+        "branch": config.branch,
+        "prefix": config.prefix,
+        "timeout": config.timeout,
     }
 
 
@@ -410,8 +423,10 @@ def _read_github_metadata(config: dict[str, Any]) -> dict[str, Any]:
         return {}
     try:
         return _loads_json_object(github_file["content"].decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PrivateDataStoreUnavailableError(
+            "private operator metadata could not be decoded"
+        ) from exc
 
 
 def _loads_json_object(text: str) -> dict[str, Any]:
@@ -434,6 +449,8 @@ def _save_github_operator_sample(
     cleaned: pd.DataFrame,
     warnings: list[str],
     config: dict[str, Any],
+    *,
+    related_private_files: Mapping[str, bytes] | None = None,
 ) -> dict[str, Any]:
     saved_df = _normalize_for_storage(cleaned)
     metadata = _read_github_metadata(config)
@@ -450,17 +467,24 @@ def _save_github_operator_sample(
     if kind == "historical_input":
         entry["months"] = _month_labels(saved_df)
 
-    csv_path = _github_operator_file_path(kind, config)
     csv_bytes = saved_df.to_csv(index=False).encode("utf-8-sig")
-    csv_result = _github_put_file(
-        csv_path,
-        csv_bytes,
-        f"Update {kind} operator sample",
-        config,
-    )
-
     metadata[kind] = entry
-    _write_github_metadata(metadata, config)
+    files: dict[str, bytes] = {
+        KIND_TO_OPERATOR_FILE[kind]: csv_bytes,
+        METADATA_FILE_NAME: (
+            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        ),
+    }
+    for related_path, related_content in (related_private_files or {}).items():
+        normalized_related_path = str(related_path).replace("\\", "/").strip("/")
+        if normalized_related_path in files:
+            raise ValueError(f"duplicate private data path: {normalized_related_path}")
+        files[normalized_related_path] = bytes(related_content)
+    commit_result = write_private_data_files_atomic(
+        files,
+        f"Update {kind} operator data",
+    )
+    csv_path = _github_operator_file_path(kind, config)
     return {
         "ok": True,
         "kind": kind,
@@ -470,7 +494,7 @@ def _save_github_operator_sample(
         "rows": int(len(saved_df)),
         "warnings": warnings,
         "df": saved_df,
-        "github_commit_sha": (csv_result.get("commit") or {}).get("sha"),
+        "github_commit_sha": (commit_result.get("commit") or {}).get("sha"),
     }
 
 
@@ -538,10 +562,17 @@ def _github_api_request(
     except urllib.error.HTTPError as exc:
         if method == "GET" and exc.code == 404:
             return None
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GitHub API {method} failed with HTTP {exc.code}: {detail}") from exc
+        if exc.code in {409, 422}:
+            raise PrivateDataStoreConflictError(
+                "private data changed before this operation completed; reload and retry"
+            ) from exc
+        raise PrivateDataStoreUnavailableError(
+            f"private data store access failed with HTTP {exc.code}"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"GitHub API {method} failed: {exc.reason}") from exc
+        raise PrivateDataStoreUnavailableError(
+            "private data store network request failed"
+        ) from exc
 
     if not response_body:
         return {}

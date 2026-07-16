@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,18 @@ from uuid import uuid4
 import pandas as pd
 
 from src import history_schema
+from src.private_data_store import (
+    PrivateDataStoreUnavailableError,
+    is_private_data_store_enabled,
+    private_data_display_path,
+    read_private_data_file,
+    write_private_data_file,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FORECAST_HISTORY_PATH = REPO_ROOT / "data" / "history" / "forecast_history.csv"
+PRIVATE_FORECAST_HISTORY_PATH = "history/forecast_history.csv"
 SCENARIO_STRATEGY_COLUMN = "provision_strategy"
 
 _CONTEXT_COLUMNS = (
@@ -87,6 +96,9 @@ def append_forecast_history(
     path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Append forecast history rows to CSV after schema and duplicate checks."""
+    if path is None and is_private_data_store_enabled():
+        return _append_private_forecast_history(rows)
+
     history_path = ensure_history_dir(path)
     incoming = _normalize_history_rows(rows)
     existing = load_forecast_history(history_path)
@@ -108,6 +120,10 @@ def append_forecast_history(
 
 def load_forecast_history(path: str | Path | None = None) -> pd.DataFrame:
     """Load forecast history CSV, returning an empty schema frame when absent."""
+    if path is None and is_private_data_store_enabled():
+        loaded, _sha = _read_private_forecast_history()
+        return loaded
+
     history_path = _history_path(path)
     columns = list(history_schema.FORECAST_HISTORY_COLUMNS)
     if not history_path.exists() or history_path.stat().st_size == 0:
@@ -119,6 +135,52 @@ def load_forecast_history(path: str | Path | None = None) -> pd.DataFrame:
         history_schema.FORECAST_HISTORY,
     )
     return loaded.loc[:, columns]
+
+
+def forecast_history_location(path: str | Path | None = None) -> str:
+    """Return the active durable location without exposing credentials."""
+    if path is None and is_private_data_store_enabled():
+        return private_data_display_path(PRIVATE_FORECAST_HISTORY_PATH)
+    return str(_history_path(path))
+
+
+def _append_private_forecast_history(
+    rows: pd.DataFrame | list[dict[str, Any]],
+) -> pd.DataFrame:
+    incoming = _normalize_history_rows(rows)
+    existing, expected_sha = _read_private_forecast_history()
+    conflicts = _find_duplicate_conflicts(existing, incoming)
+    if conflicts:
+        conflict_text = ", ".join(conflicts)
+        raise ValueError(f"Duplicate forecast_history rows blocked: {conflict_text}")
+    updated = pd.concat([existing, incoming], ignore_index=True)
+    updated = updated.loc[:, list(history_schema.FORECAST_HISTORY_COLUMNS)]
+    payload = updated.to_csv(index=False).encode("utf-8-sig")
+    write_private_data_file(
+        PRIVATE_FORECAST_HISTORY_PATH,
+        payload,
+        "Append forecast history",
+        expected_sha=expected_sha,
+    )
+    return updated
+
+
+def _read_private_forecast_history() -> tuple[pd.DataFrame, str | None]:
+    columns = list(history_schema.FORECAST_HISTORY_COLUMNS)
+    stored = read_private_data_file(PRIVATE_FORECAST_HISTORY_PATH)
+    if stored is None or not stored.content:
+        return pd.DataFrame(columns=columns), None
+    try:
+        loaded = pd.read_csv(io.BytesIO(stored.content), encoding="utf-8-sig")
+        history_schema.validate_required_columns(
+            loaded.columns,
+            history_schema.FORECAST_HISTORY,
+        )
+    except Exception as exc:  # noqa: BLE001 - corrupt remote data must fail closed.
+        raise PrivateDataStoreUnavailableError(
+            "private forecast history could not be decoded or validated"
+        ) from exc
+    return loaded.loc[:, columns].copy(), stored.sha or None
 
 
 def _history_path(path: str | Path | None) -> Path:

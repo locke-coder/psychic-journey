@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
+import json
 import math
 import os
 import tempfile
@@ -47,7 +48,7 @@ try:
 except ImportError:
     _EXCEL_SCENARIO_GRID_REQUIRED_COLUMNS = None
     _excel_prepare_scenario_grid_export_frame = None
-from src.final_actual_store import load_final_actuals
+from src.final_actual_store import final_actuals_location, load_final_actuals
 from src.forecast_models import (
     F1_CUMULATIVE_RATE,
     F2_LAST_TWO_CLOSES,
@@ -68,7 +69,24 @@ except ImportError:  # pragma: no cover - tolerates transient Streamlit deploy c
     def get_operator_sample_location(kind: str) -> str:
         return str(get_operator_sample_path(kind))
 
-from src.history_store import append_forecast_history, build_forecast_history_rows
+from src.history_store import (
+    append_forecast_history,
+    build_forecast_history_rows,
+    forecast_history_location,
+    load_forecast_history,
+)
+from src.private_data_store import (
+    PrivateDataStoreError,
+    PrivateDataStoreUnavailableError,
+    delete_private_data_file,
+    is_private_data_store_enabled,
+    list_private_data_files,
+    private_data_display_path,
+    read_private_data_file,
+    require_private_data_store,
+    write_private_data_file,
+    write_private_data_files_atomic,
+)
 from src.next_close import calculate_next_close_required
 from src.overachievement_models import (
     N1_MAINTAIN_TARGET,
@@ -183,6 +201,8 @@ SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "input_sample.csv"
 HISTORICAL_SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "historical_input_sample.csv"
 OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
+PRIVATE_SAVED_ACTUALS_PATH = "actuals/saved_actuals.csv"
+PRIVATE_REPORTS_LATEST_PATH = "reports/latest"
 AUDIT_READONLY_QUERY_PARAM = "audit_readonly"
 AUDIT_READONLY_TRUE_VALUES = {"1", "true", "yes", "on"}
 INPUT_TEMPLATE_FILENAME = "month_close_forecast_input_template.xlsx"
@@ -1229,10 +1249,21 @@ def main() -> None:
     _inject_app_styles()
     if not _require_access_password():
         st.stop()
+    try:
+        require_private_data_store()
+    except PrivateDataStoreError as exc:
+        st.error(f"Private 데이터 저장소 설정이 없어 앱을 중지했습니다: {exc}")
+        st.stop()
+        return
     base_config = load_model_config()
     active_page = get_current_page(st)
     audit_readonly = _is_audit_readonly_mode(st)
-    page_context = _build_page_context(base_config)
+    try:
+        page_context = _build_page_context(base_config)
+    except PrivateDataStoreError as exc:
+        st.error(f"Private 데이터 저장소를 사용할 수 없어 앱을 중지했습니다: {exc}")
+        st.stop()
+        return
     page_context["audit_readonly"] = audit_readonly
     page_context = _with_page_callbacks(page_context, base_config)
 
@@ -1392,6 +1423,8 @@ def _get_historical_input_state() -> tuple[pd.DataFrame, str]:
         return pd.DataFrame(), ""
     try:
         historical_df, source_info = load_sample_with_source("historical_input")
+    except PrivateDataStoreError:
+        raise
     except Exception:  # noqa: BLE001 - keep the page usable if the bundled sample is missing.
         return pd.DataFrame(), ""
     _warn_operator_sample_fallback("과거 샘플", source_info)
@@ -3937,6 +3970,22 @@ def _render_excel_freshness_badge(report_path: Path) -> None:
     )
 
 
+def _render_excel_freshness_status(status: Mapping[str, object]) -> None:
+    generated_at = str(status.get("modified_at") or "확인 불가")
+    file_name = str(status.get("file_name") or "")
+    size_bytes = int(status.get("size_bytes") or 0)
+    st.markdown(
+        '<section class="excel-freshness-badge">'
+        '<div>'
+        '<div class="excel-freshness-badge__label">Excel freshness</div>'
+        f"<strong>{escape(file_name)}</strong>"
+        '</div>'
+        f"<span>생성/수정시각 {escape(generated_at)} · {size_bytes:,} bytes</span>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
     if _render_validation_guard(context):
         return
@@ -3953,11 +4002,16 @@ def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
     )
 
     latest_files = list_latest_excel_outputs()
-    latest_report_path = _latest_existing_report_path(latest_files)
+    latest_report_status = get_latest_excel_artifact_status()
+    storage_label = (
+        "Private 데이터 저장소"
+        if is_private_data_store_enabled()
+        else "outputs/latest"
+    )
     st.markdown(
         '<section class="excel-readonly-panel">'
         '<div class="excel-readonly-panel__label">읽기 전용</div>'
-        '<h3>outputs/latest 상태 조회</h3>'
+        f'<h3>{escape(storage_label)} 상태 조회</h3>'
         '<p>이 페이지를 열거나 화면 캡처하는 동안 Excel 리포트는 생성하거나 수정하지 않습니다. '
         '파일 생성은 아래 재생성 버튼을 누를 때만 실행됩니다.</p>'
         "</section>",
@@ -3966,19 +4020,23 @@ def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
     if audit_readonly:
         st.info("읽기 전용 감리 모드: Excel 생성/재생성 버튼이 비활성화됩니다.")
     if latest_files.empty:
-        st.info("outputs/latest에 공유 가능한 Excel 파일이 없습니다. 생성 필요 상태입니다.")
+        st.info(f"{storage_label}에 공유 가능한 Excel 파일이 없습니다. 생성 필요 상태입니다.")
     else:
         st.dataframe(latest_files, hide_index=True, use_container_width=True)
 
-    if latest_report_path is None:
+    if not latest_report_status.get("exists"):
         st.info("기존 daily_report Excel 리포트가 없어 생성 필요 상태입니다.")
     else:
-        _render_excel_freshness_badge(latest_report_path)
-        st.markdown(render_download_card(latest_report_path.name), unsafe_allow_html=True)
+        _render_excel_freshness_status(latest_report_status)
+        latest_report = load_latest_excel_report_bytes(latest_report_status)
+        if latest_report is None:  # pragma: no cover - status and storage are read together.
+            raise PrivateDataStoreError("latest Excel report could not be read")
+        latest_report_bytes, latest_report_name = latest_report
+        st.markdown(render_download_card(latest_report_name), unsafe_allow_html=True)
         st.download_button(
             "기존 Excel 리포트 다운로드",
-            data=latest_report_path.read_bytes(),
-            file_name=latest_report_path.name,
+            data=latest_report_bytes,
+            file_name=latest_report_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -4661,9 +4719,22 @@ def normalize_direct_input_edits(df: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
-def load_saved_actuals(path: str | Path = SAVED_ACTUALS_PATH) -> pd.DataFrame:
-    """Load locally saved cumulative actual values without creating or rewriting files."""
-    saved_path = Path(path)
+def load_saved_actuals(path: str | Path | None = None) -> pd.DataFrame:
+    """Load cumulative actual values without creating or rewriting storage."""
+    if path is None and is_private_data_store_enabled():
+        stored = read_private_data_file(PRIVATE_SAVED_ACTUALS_PATH)
+        if stored is None or not stored.content:
+            return pd.DataFrame(columns=SAVED_ACTUAL_COLUMNS)
+        try:
+            return normalize_saved_actuals_schema(
+                pd.read_csv(io.BytesIO(stored.content), encoding="utf-8-sig")
+            )
+        except Exception as exc:  # noqa: BLE001 - corrupt remote data must fail closed.
+            raise PrivateDataStoreUnavailableError(
+                "private saved actuals could not be decoded or validated"
+            ) from exc
+
+    saved_path = Path(path) if path is not None else SAVED_ACTUALS_PATH
     if not saved_path.exists():
         return pd.DataFrame(columns=SAVED_ACTUAL_COLUMNS)
     return normalize_saved_actuals_schema(pd.read_csv(saved_path, encoding="utf-8-sig"))
@@ -4676,12 +4747,23 @@ def normalize_saved_actuals_schema(saved_actuals: pd.DataFrame) -> pd.DataFrame:
 
 def save_saved_actuals(
     saved_actuals: pd.DataFrame,
-    path: str | Path = SAVED_ACTUALS_PATH,
-) -> Path:
+    path: str | Path | None = None,
+) -> Path | str:
     """Persist normalized saved actuals after an explicit user action."""
-    saved_path = Path(path)
+    normalized = normalize_saved_actuals_schema(saved_actuals)
+    if path is None and is_private_data_store_enabled():
+        existing = read_private_data_file(PRIVATE_SAVED_ACTUALS_PATH)
+        write_private_data_file(
+            PRIVATE_SAVED_ACTUALS_PATH,
+            normalized.to_csv(index=False).encode("utf-8-sig"),
+            "Update saved actuals",
+            expected_sha=existing.sha if existing is not None else None,
+        )
+        return private_data_display_path(PRIVATE_SAVED_ACTUALS_PATH)
+
+    saved_path = Path(path) if path is not None else SAVED_ACTUALS_PATH
     saved_path.parent.mkdir(parents=True, exist_ok=True)
-    normalize_saved_actuals_schema(saved_actuals).to_csv(
+    normalized.to_csv(
         saved_path,
         index=False,
         encoding="utf-8-sig",
@@ -4691,26 +4773,50 @@ def save_saved_actuals(
 
 def save_actual_values(
     df: pd.DataFrame,
-    path: str | Path = SAVED_ACTUALS_PATH,
-) -> Path:
+    path: str | Path | None = None,
+) -> Path | str:
     """Persist cumulative actual values for future app defaults."""
-    saved_path = Path(path)
-    saved_path.parent.mkdir(parents=True, exist_ok=True)
     saved_actuals = _build_saved_actuals(df)
-    if saved_path.exists():
+    existing = load_saved_actuals(path)
+    if not existing.empty:
         saved_actuals = _merge_saved_actuals(
-            load_saved_actuals(saved_path),
+            existing,
             saved_actuals,
         )
-    return save_saved_actuals(saved_actuals, saved_path)
+    return save_saved_actuals(saved_actuals, path)
 
 
 def save_current_input_defaults(
     df: pd.DataFrame,
-    path: str | Path = SAVED_ACTUALS_PATH,
+    path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Persist edited current input values as restart defaults."""
     normalized = normalize_direct_input_edits(df)
+    if path is None and is_private_data_store_enabled():
+        saved_actuals = _build_saved_actuals(normalized)
+        existing_actuals = load_saved_actuals()
+        if not existing_actuals.empty:
+            saved_actuals = _merge_saved_actuals(existing_actuals, saved_actuals)
+        operator_result = save_operator_sample(
+            "current_input",
+            normalized,
+            related_private_files={
+                PRIVATE_SAVED_ACTUALS_PATH: (
+                    normalize_saved_actuals_schema(saved_actuals)
+                    .to_csv(index=False)
+                    .encode("utf-8-sig")
+                )
+            },
+        )
+        return {
+            "ok": bool(operator_result.get("ok")),
+            "df": normalized,
+            "saved_actuals_path": private_data_display_path(
+                PRIVATE_SAVED_ACTUALS_PATH
+            ),
+            "operator_result": operator_result,
+        }
+
     saved_actuals_path = save_actual_values(normalized, path)
     operator_result = save_operator_sample("current_input", normalized)
     return {
@@ -4767,9 +4873,16 @@ def apply_saved_actuals(
     return result.drop(columns=["_date_key", "_business_day_key"])
 
 
-def clear_saved_actuals(path: str | Path = SAVED_ACTUALS_PATH) -> None:
-    """Delete locally saved actual defaults when the user asks to reset them."""
-    saved_path = Path(path)
+def clear_saved_actuals(path: str | Path | None = None) -> None:
+    """Delete saved actual defaults when the user asks to reset them."""
+    if path is None and is_private_data_store_enabled():
+        delete_private_data_file(
+            PRIVATE_SAVED_ACTUALS_PATH,
+            "Delete saved actuals",
+        )
+        return
+
+    saved_path = Path(path) if path is not None else SAVED_ACTUALS_PATH
     if saved_path.exists():
         saved_path.unlink()
 
@@ -6325,9 +6438,30 @@ def build_summary_dict(
 
 
 def list_latest_excel_outputs(output_dir: Path | None = None) -> pd.DataFrame:
-    """Return read-only metadata for existing Excel files under outputs/latest."""
-    latest_output_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR / "latest"
+    """Return read-only metadata for existing Excel report files."""
     columns = ["파일명", "경로", "수정시각", "크기(bytes)", "공유구분"]
+    if output_dir is None and is_private_data_store_enabled():
+        rows: list[dict[str, object]] = []
+        for entry in list_private_data_files(PRIVATE_REPORTS_LATEST_PATH):
+            if entry.type != "file" or not entry.name.lower().endswith(".xlsx"):
+                continue
+            manifest = _read_private_report_manifest(entry.path)
+            rows.append(
+                {
+                    "파일명": entry.name,
+                    "경로": private_data_display_path(entry.path),
+                    "수정시각": str(manifest.get("generated_at") or ""),
+                    "크기(bytes)": entry.size,
+                    "공유구분": (
+                        "daily_report"
+                        if entry.name.startswith("daily_report_")
+                        else "reference"
+                    ),
+                }
+            )
+        return pd.DataFrame(rows, columns=columns)
+
+    latest_output_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR / "latest"
     if not latest_output_dir.exists():
         return pd.DataFrame(columns=columns)
 
@@ -6371,6 +6505,34 @@ def _latest_existing_report_path(
 
 def get_latest_excel_artifact_status(output_dir: Path | None = None) -> dict[str, object]:
     """Describe the actual newest daily report without creating or modifying files."""
+    if output_dir is None and is_private_data_store_enabled():
+        latest_files = list_latest_excel_outputs()
+        candidates = latest_files.loc[
+            latest_files["파일명"].astype(str).str.startswith("daily_report_")
+        ]
+        if candidates.empty:
+            return {
+                "exists": False,
+                "file_name": "",
+                "modified_at": "",
+                "size_bytes": 0,
+            }
+        ordered = candidates.sort_values(
+            by=["수정시각", "파일명"],
+            kind="stable",
+        )
+        latest = ordered.iloc[-1]
+        file_name = str(latest["파일명"])
+        private_path = f"{PRIVATE_REPORTS_LATEST_PATH}/{file_name}"
+        return {
+            "exists": True,
+            "file_name": file_name,
+            "modified_at": str(latest["수정시각"]),
+            "size_bytes": int(latest["크기(bytes)"]),
+            "private_path": private_path,
+            "path": private_data_display_path(private_path),
+        }
+
     latest_output_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR / "latest"
     latest_files = list_latest_excel_outputs(latest_output_dir)
     latest_path = _latest_existing_report_path(latest_files, latest_output_dir)
@@ -6390,7 +6552,56 @@ def get_latest_excel_artifact_status(output_dir: Path | None = None) -> dict[str
             "%Y-%m-%d %H:%M:%S"
         ),
         "size_bytes": stat.st_size,
+        "path": str(latest_path),
     }
+
+
+def load_latest_excel_report_bytes(
+    status: Mapping[str, object] | None = None,
+) -> tuple[bytes, str] | None:
+    """Read the newest Excel report from the active durable store."""
+    resolved = dict(status or get_latest_excel_artifact_status())
+    if not resolved.get("exists"):
+        return None
+    file_name = str(resolved.get("file_name") or "")
+    private_path = str(resolved.get("private_path") or "")
+    if private_path:
+        stored = read_private_data_file(private_path, required=True)
+        if stored is None:  # pragma: no cover - required=True is fail closed.
+            return None
+        manifest = _read_private_report_manifest(private_path)
+        expected_size = int(manifest.get("size_bytes") or -1)
+        expected_hash = str(manifest.get("sha256") or "")
+        actual_hash = hashlib.sha256(stored.content).hexdigest()
+        if expected_size != len(stored.content) or expected_hash != actual_hash:
+            raise PrivateDataStoreUnavailableError(
+                f"private report integrity check failed: {file_name}"
+            )
+        return stored.content, file_name
+    local_path = Path(str(resolved.get("path") or ""))
+    return local_path.read_bytes(), file_name
+
+
+def _read_private_report_manifest(report_path: str) -> dict[str, Any]:
+    manifest = read_private_data_file(
+        f"{report_path}.manifest.json",
+        required=True,
+    )
+    if manifest is None or not manifest.content:  # pragma: no cover - required read.
+        raise PrivateDataStoreUnavailableError(
+            f"private report manifest is missing: {Path(report_path).name}"
+        )
+    try:
+        payload = json.loads(manifest.content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PrivateDataStoreError(
+            f"private report manifest is invalid: {Path(report_path).name}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PrivateDataStoreUnavailableError(
+            f"private report manifest is invalid: {Path(report_path).name}"
+        )
+    return payload
 
 
 def build_excel_report_bytes(
@@ -6403,27 +6614,67 @@ def build_excel_report_bytes(
     metric: str,
     as_of_date: object,
 ) -> tuple[bytes, str]:
-    """Export the calculated report to outputs and return bytes for download."""
-    latest_output_dir = OUTPUT_DIR / "latest"
-    latest_output_dir.mkdir(parents=True, exist_ok=True)
+    """Export a report and persist durable output in the active data store."""
     date_token = pd.Timestamp(as_of_date).strftime("%Y%m%d")
     report_name = f"daily_report_{metric}_{date_token}.xlsx"
-    output_path = latest_output_dir / report_name
-    saved_path = export_daily_report(
-        output_path,
-        summary_dict,
-        scenario_df,
-        revised_targets_df,
-        close_cycle_df,
-        validation_result,
-        report_text,
-        overwrite=True,
+    history_tables = load_history_tables_for_app()
+    forecast_history_df = history_tables["forecast_history"]
+    final_actuals_df = history_tables["final_actuals"]
+    backtest_summary_df = summarize_by_forecast_model(
+        build_backtest_dataset(forecast_history_df, final_actuals_df)
     )
+
+    def _export(output_path: Path) -> Path:
+        return export_daily_report(
+            output_path,
+            summary_dict,
+            scenario_df,
+            revised_targets_df,
+            close_cycle_df,
+            validation_result,
+            report_text,
+            forecast_history_df=forecast_history_df,
+            final_actuals_df=final_actuals_df,
+            backtest_summary_df=backtest_summary_df,
+            overwrite=True,
+        )
+
+    if is_private_data_store_enabled():
+        with tempfile.TemporaryDirectory(prefix="sales_forecast_report_") as temp_dir:
+            saved_path = _export(Path(temp_dir) / report_name)
+            report_bytes = saved_path.read_bytes()
+        private_report_path = f"{PRIVATE_REPORTS_LATEST_PATH}/{saved_path.name}"
+        manifest = {
+            "file_name": saved_path.name,
+            "generated_at": pd.Timestamp.now(tz=APP_TIMEZONE).isoformat(),
+            "as_of_date": pd.Timestamp(as_of_date).date().isoformat(),
+            "metric": metric,
+            "size_bytes": len(report_bytes),
+            "sha256": hashlib.sha256(report_bytes).hexdigest(),
+        }
+        write_private_data_files_atomic(
+            {
+                private_report_path: report_bytes,
+                f"{private_report_path}.manifest.json": (
+                    json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+                    + b"\n"
+                ),
+            },
+            f"Publish {saved_path.name}",
+        )
+        return report_bytes, saved_path.name
+
+    latest_output_dir = OUTPUT_DIR / "latest"
+    latest_output_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = _export(latest_output_dir / report_name)
     return saved_path.read_bytes(), saved_path.name
 
 
 def load_forecast_history_for_app(path: str | Path | None = None) -> pd.DataFrame:
     """Load forecast history for the UI, preserving optional future columns."""
+    if path is None and is_private_data_store_enabled():
+        return load_forecast_history()
+
     history_path = (
         Path(path)
         if path is not None
@@ -6444,14 +6695,17 @@ def load_history_tables_for_app(
     final_actuals_path: str | Path | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Load history tables without failing when either storage file is absent."""
-    final_path = (
-        Path(final_actuals_path)
-        if final_actuals_path is not None
-        else _history_storage_path(history_schema.FINAL_ACTUALS)
-    )
+    if final_actuals_path is not None:
+        final_actuals = load_final_actuals(Path(final_actuals_path))
+    elif is_private_data_store_enabled():
+        final_actuals = load_final_actuals()
+    else:
+        final_actuals = load_final_actuals(
+            _history_storage_path(history_schema.FINAL_ACTUALS)
+        )
     return {
         "forecast_history": load_forecast_history_for_app(forecast_history_path),
-        "final_actuals": load_final_actuals(final_path),
+        "final_actuals": final_actuals,
     }
 
 
@@ -6462,11 +6716,12 @@ def save_forecast_history_snapshot(
     path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Save the current scenario grid as one forecast history snapshot."""
-    target_path = (
-        Path(path)
-        if path is not None
-        else _history_storage_path(history_schema.FORECAST_HISTORY)
-    )
+    if path is not None:
+        target_path: Path | None = Path(path)
+    elif is_private_data_store_enabled():
+        target_path = None
+    else:
+        target_path = _history_storage_path(history_schema.FORECAST_HISTORY)
     run_context = {
         "run_id": None,
         "run_datetime": pd.Timestamp.now(tz=APP_TIMEZONE),
@@ -7393,7 +7648,11 @@ def _render_input_editor(
         key="clear_saved_actuals",
         disabled=audit_readonly,
     ):
-        clear_saved_actuals()
+        try:
+            clear_saved_actuals()
+        except PrivateDataStoreError as exc:
+            st.error(f"Private 데이터 저장소에서 실적값을 삭제하지 못했습니다: {exc}")
+            st.stop()
         st.session_state.pop(editor_key, None)
         st.session_state.pop(source_key, None)
         st.rerun()
@@ -7413,8 +7672,13 @@ def _render_input_editor(
         key="save_saved_actuals_explicit",
         disabled=audit_readonly,
     ):
-        result = save_current_input_defaults(normalized)
-        saved_path = Path(str(result.get("saved_actuals_path")))
+        try:
+            result = save_current_input_defaults(normalized)
+        except PrivateDataStoreError as exc:
+            st.error(f"Private 데이터 저장소에 입력값을 저장하지 못했습니다: {exc}")
+            st.stop()
+            return normalized
+        saved_path = str(result.get("saved_actuals_path") or "")
         operator_result = dict(result.get("operator_result") or {})
         operator_path = str(operator_result.get("path") or get_operator_sample_path("current_input"))
         if result.get("ok"):
@@ -7428,8 +7692,7 @@ def _render_input_editor(
             _render_operator_sample_warnings(operator_result.get("warnings") or [])
         else:
             st.warning(
-                "실적 보조 저장 파일은 갱신했지만, 리부트 기본 입력값 저장에는 실패했습니다. "
-                f"저장 파일: {_short_display_path(saved_path)}"
+                "입력값 검증에 실패해 Private 데이터 저장소에는 아무 파일도 갱신하지 않았습니다."
             )
             _render_operator_sample_errors(operator_result.get("errors") or [])
             _render_operator_sample_warnings(operator_result.get("warnings") or [])
@@ -7440,7 +7703,7 @@ def apply_latest_upload_policy(
     df: pd.DataFrame,
     source_label: str,
     saved_actuals: pd.DataFrame,
-    path: str | Path = SAVED_ACTUALS_PATH,
+    path: str | Path | None = None,
     persist_uploaded_defaults: bool = True,
 ) -> tuple[pd.DataFrame, str]:
     """Apply the latest-value policy for uploaded current-month inputs."""
@@ -7470,6 +7733,10 @@ def _is_current_upload_source(source_label: str) -> bool:
 def _load_saved_actuals_for_ui() -> pd.DataFrame:
     try:
         return load_saved_actuals()
+    except PrivateDataStoreError as exc:
+        st.error(f"Private 데이터 저장소에서 실적값을 불러오지 못했습니다: {exc}")
+        st.stop()
+        raise
     except Exception as exc:  # noqa: BLE001 - keep the app usable if the store is corrupt.
         st.warning(f"저장된 실적값을 불러올 수 없습니다: {exc}")
         return pd.DataFrame(columns=SAVED_ACTUAL_COLUMNS)
@@ -8047,9 +8314,14 @@ def _render_forecast_history_backtest_tab(
         except Exception as exc:  # noqa: BLE001 - Streamlit should stay usable.
             st.warning(f"예측 이력을 저장하지 못했습니다: {exc}")
 
+    if is_private_data_store_enabled():
+        forecast_location = forecast_history_location()
+        actuals_location = final_actuals_location()
+    else:
+        forecast_location = str(_history_storage_path(history_schema.FORECAST_HISTORY))
+        actuals_location = str(_history_storage_path(history_schema.FINAL_ACTUALS))
     path_col.caption(
-        f"forecast_history: {_history_storage_path(history_schema.FORECAST_HISTORY)} | "
-        f"final_actuals: {_history_storage_path(history_schema.FINAL_ACTUALS)}"
+        f"forecast_history: {forecast_location} | final_actuals: {actuals_location}"
     )
 
     tables = _load_history_tables_for_ui()
@@ -8136,6 +8408,10 @@ def _render_forecast_history_backtest_tab(
 def _load_history_tables_for_ui() -> dict[str, pd.DataFrame]:
     try:
         return load_history_tables_for_app()
+    except PrivateDataStoreError as exc:
+        st.error(f"Private 예측 이력 저장소를 불러오지 못했습니다: {exc}")
+        st.stop()
+        raise
     except Exception as exc:  # noqa: BLE001 - keep the app usable if storage is corrupt.
         st.warning(f"예측 이력/Backtest 저장소를 불러오지 못했습니다: {exc}")
         return {

@@ -77,21 +77,27 @@ S3-compatible storage, or a controlled Google Sheet.
 ## GitHub External Store
 
 For Streamlit Cloud-style hosting, the app can use a separate private GitHub
-repository as the operator sample store. Configure these Streamlit Secrets or
+repository as the durable data store. Prefer these Streamlit Secrets or
 environment variables:
 
-- `GITHUB_OPERATOR_SAMPLE_REPO`: for example `locke-coder/sales-forecast-data-private`
-- `GITHUB_OPERATOR_SAMPLE_TOKEN`: fine-grained token with Contents read/write on the data repo
-- `GITHUB_OPERATOR_SAMPLE_BRANCH`: defaults to `main`
-- `GITHUB_OPERATOR_SAMPLE_PREFIX`: defaults to `operator_samples`
+- `PRIVATE_DATA_REPO`: private repository in `owner/name` format
+- `PRIVATE_DATA_TOKEN`: fine-grained token limited to that repository
+- `PRIVATE_DATA_BRANCH`: defaults to `main`
+- `PRIVATE_DATA_PREFIX`: defaults to `operator_samples`
 
-When configured, the app loads GitHub data before local runtime storage and
-packaged samples:
+The legacy `GITHUB_OPERATOR_SAMPLE_*` names remain supported.
+
+When configured, the app uses the repository for operator inputs, saved actuals,
+forecast history, final actuals, and generated reports:
 
 ```text
 operator_samples/current_input_sample.csv
 operator_samples/historical_input_sample.csv
 operator_samples/metadata.json
+operator_samples/actuals/saved_actuals.csv
+operator_samples/history/forecast_history.csv
+operator_samples/history/final_actuals.csv
+operator_samples/reports/latest/
 ```
 
 Use a private repository only. GitHub commit history keeps previous versions, so
@@ -104,6 +110,7 @@ Public demos must use anonymous or sample data only.
 
 ## Repository And Audit Policy
 
-Real sales data and operator-saved defaults must not be committed to GitHub or
-included in audit submission packages. `runtime_storage/`, `operator_data/`,
+Real sales data and operator-saved defaults must not be committed to the public
+code repository or included in audit submission packages. They may be stored
+only in the approved private data repository. `runtime_storage/`, `operator_data/`,
 `local_data/`, `*.local.csv`, and `*.local.xlsx` are excluded by default.

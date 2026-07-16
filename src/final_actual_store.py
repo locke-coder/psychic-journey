@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import math
 from collections.abc import Mapping
 from datetime import datetime
@@ -16,12 +17,20 @@ from src.history_schema import (
     FINAL_ACTUALS_UPSERT_KEY,
     validate_required_columns,
 )
+from src.private_data_store import (
+    PrivateDataStoreUnavailableError,
+    is_private_data_store_enabled,
+    private_data_display_path,
+    read_private_data_file,
+    write_private_data_file,
+)
 from src.schema import validate_metric
 
 
 DEFAULT_FINAL_ACTUALS_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "history" / "final_actuals.csv"
 )
+PRIVATE_FINAL_ACTUALS_PATH = "history/final_actuals.csv"
 
 UNDER_TARGET = "UNDER_TARGET"
 ON_TARGET = "ON_TARGET"
@@ -67,9 +76,32 @@ def upsert_final_actual(
 ) -> pd.DataFrame:
     """Insert or replace a final actual by target_month and metric."""
     normalized_record = _normalize_record(record)
-    final_actuals_path = _resolve_path(path)
+    if path is None and is_private_data_store_enabled():
+        existing, expected_sha = _read_private_final_actuals()
+        updated = _upsert_frame(existing, normalized_record)
+        payload = updated.to_csv(index=False).encode("utf-8-sig")
+        write_private_data_file(
+            PRIVATE_FINAL_ACTUALS_PATH,
+            payload,
+            "Upsert final actual",
+            expected_sha=expected_sha,
+        )
+        return updated
 
+    final_actuals_path = _resolve_path(path)
     existing = load_final_actuals(final_actuals_path)
+    updated = _upsert_frame(existing, normalized_record)
+
+    final_actuals_path.parent.mkdir(parents=True, exist_ok=True)
+    updated.to_csv(final_actuals_path, index=False, encoding="utf-8")
+    return updated
+
+
+def _upsert_frame(
+    existing: pd.DataFrame,
+    normalized_record: Mapping[str, object],
+) -> pd.DataFrame:
+    """Return canonical rows with one target-month/metric record replaced."""
     if existing.empty:
         updated = pd.DataFrame(columns=FINAL_ACTUALS_COLUMNS)
     else:
@@ -83,14 +115,15 @@ def upsert_final_actual(
         ignore_index=True,
     )
     updated = updated.loc[:, list(FINAL_ACTUALS_COLUMNS)]
-
-    final_actuals_path.parent.mkdir(parents=True, exist_ok=True)
-    updated.to_csv(final_actuals_path, index=False, encoding="utf-8")
     return updated
 
 
 def load_final_actuals(path: str | Path | None = None) -> pd.DataFrame:
     """Load final actuals from CSV, returning an empty canonical frame when absent."""
+    if path is None and is_private_data_store_enabled():
+        loaded, _sha = _read_private_final_actuals()
+        return loaded
+
     final_actuals_path = _resolve_path(path)
     if not final_actuals_path.exists():
         return pd.DataFrame(columns=FINAL_ACTUALS_COLUMNS)
@@ -98,6 +131,33 @@ def load_final_actuals(path: str | Path | None = None) -> pd.DataFrame:
     final_actuals = pd.read_csv(final_actuals_path, keep_default_na=False)
     validate_required_columns(final_actuals.columns, FINAL_ACTUALS)
     return final_actuals.loc[:, list(FINAL_ACTUALS_COLUMNS)].copy()
+
+
+def final_actuals_location(path: str | Path | None = None) -> str:
+    """Return the active durable location without exposing credentials."""
+    if path is None and is_private_data_store_enabled():
+        return private_data_display_path(PRIVATE_FINAL_ACTUALS_PATH)
+    return str(_resolve_path(path))
+
+
+def _read_private_final_actuals() -> tuple[pd.DataFrame, str | None]:
+    columns = list(FINAL_ACTUALS_COLUMNS)
+    stored = read_private_data_file(PRIVATE_FINAL_ACTUALS_PATH)
+    if stored is None or not stored.content:
+        return pd.DataFrame(columns=columns), None
+
+    try:
+        loaded = pd.read_csv(
+            io.BytesIO(stored.content),
+            encoding="utf-8-sig",
+            keep_default_na=False,
+        )
+        validate_required_columns(loaded.columns, FINAL_ACTUALS)
+    except Exception as exc:  # noqa: BLE001 - corrupt remote data must fail closed.
+        raise PrivateDataStoreUnavailableError(
+            "private final actuals could not be decoded or validated"
+        ) from exc
+    return loaded.loc[:, columns].copy(), stored.sha or None
 
 
 def _normalize_record(record: Mapping[str, Any]) -> dict[str, object]:
@@ -182,4 +242,3 @@ def _is_blank(value: object) -> bool:
     if isinstance(value, float):
         return math.isnan(value)
     return False
-
