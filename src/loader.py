@@ -154,7 +154,30 @@ def _normalize_date_column(values: pd.Series) -> pd.Series:
     raw_dates = values.replace(r"^\s*$", pd.NA, regex=True)
     if raw_dates.isna().any():
         raise ValueError("date is required for each input row.")
-    return pd.to_datetime(raw_dates, errors="raise")
+    parsed_dates = pd.to_datetime(raw_dates, errors="coerce")
+    invalid_dates = raw_dates[parsed_dates.isna()]
+    if not invalid_dates.empty:
+        examples = _format_invalid_date_examples(invalid_dates)
+        raise ValueError(
+            "date contains invalid values. Use YYYY-MM-DD dates only. "
+            f"Problem values: {examples}"
+        )
+    return parsed_dates
+
+
+def _format_invalid_date_examples(values: pd.Series, limit: int = 5) -> str:
+    examples: list[str] = []
+    for index, value in values.head(limit).items():
+        if isinstance(index, int):
+            row_label = f"row {index + 2}"
+        else:
+            row_label = f"row {index!r}"
+        examples.append(f"{row_label}: {value!r}")
+
+    remaining = len(values) - len(examples)
+    if remaining > 0:
+        examples.append(f"... and {remaining} more")
+    return "; ".join(examples)
 
 
 def _has_fractional_values(values: pd.Series) -> bool:

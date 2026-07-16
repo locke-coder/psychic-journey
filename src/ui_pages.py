@@ -24,6 +24,7 @@ from src.ui_components import (
     status_label,
 )
 from src.ui_navigation import render_page_header_html, validate_page_key
+from src.ui_pages_raw_dashboard import render_raw_dashboard_page
 
 
 def render_page(page_key: object, context: Mapping[str, Any]) -> None:
@@ -35,6 +36,7 @@ def render_page(page_key: object, context: Mapping[str, Any]) -> None:
         "forecast_strategy": render_forecast_strategy_page,
         "report": render_report_page,
         "history": render_history_page,
+        "raw_dashboard": render_raw_dashboard_page,
         "excel": render_excel_page,
         "audit": render_audit_page,
     }.get(key, render_home_page)
@@ -112,7 +114,6 @@ def render_home_page(context: Mapping[str, Any]) -> None:
 def render_input_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
         "input",
-        "영업일정, 마감일 여부, 일별 목표, 누적 실적 입력 상태를 확인합니다.",
         context,
         "render_input_page",
     )
@@ -129,7 +130,6 @@ def render_scenarios_page(context: Mapping[str, Any]) -> None:
 def render_forecast_strategy_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
         "forecast_strategy",
-        "F1/F2/F3 예측, 목표 상태, 선택 시나리오와 운영전략을 한 화면에서 확인합니다.",
         context,
         "render_forecast_strategy_page",
     )
@@ -138,7 +138,6 @@ def render_forecast_strategy_page(context: Mapping[str, Any]) -> None:
 def render_report_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
         "report",
-        "자동 보고문 원문과 복사용 메모를 확인합니다.",
         context,
         "render_report_page",
     )
@@ -147,7 +146,6 @@ def render_report_page(context: Mapping[str, Any]) -> None:
 def render_history_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
         "history",
-        "ForecastHistory, FinalActuals, Backtest와 모델 신뢰도를 확인합니다.",
         context,
         "render_history_page",
     )
@@ -156,7 +154,6 @@ def render_history_page(context: Mapping[str, Any]) -> None:
 def render_excel_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
         "excel",
-        "outputs/latest 기준 최신 Excel 공유본과 ScenarioGrid 컬럼 상태를 확인합니다.",
         context,
         "render_excel_page",
     )
@@ -165,7 +162,6 @@ def render_excel_page(context: Mapping[str, Any]) -> None:
 def render_audit_page(context: Mapping[str, Any]) -> None:
     _render_callback_page(
         "audit",
-        "테스트, Gate Runner, 금지 패턴, 보안 운영 정책을 확인합니다.",
         context,
         "render_audit_page",
     )
@@ -173,12 +169,11 @@ def render_audit_page(context: Mapping[str, Any]) -> None:
 
 def _render_callback_page(
     page_key: str,
-    subtitle: str,
     context: Mapping[str, Any],
     callback_name: str,
 ) -> None:
     _require_streamlit()
-    st.markdown(render_page_header_html(page_key, subtitle=subtitle), unsafe_allow_html=True)
+    st.markdown(render_page_header_html(page_key), unsafe_allow_html=True)
     callback = context.get(callback_name)
     if callable(callback):
         callback()

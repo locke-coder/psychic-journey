@@ -8,6 +8,7 @@ import io
 import math
 import os
 import tempfile
+from functools import partial
 from html import escape
 from pathlib import Path
 from typing import Any, Mapping
@@ -95,6 +96,11 @@ from src.report_builder import (
     RISK_LEVEL_DEFINITIONS as REPORT_RISK_LEVEL_DEFINITIONS,
     build_daily_report_text,
 )
+from src.operational_closeout import (
+    BLOCKED as CLOSEOUT_BLOCKED,
+    REFRESH as CLOSEOUT_REFRESH,
+    build_operational_closeout_summary,
+)
 from src.scenario_runner import run_scenario_grid
 from src.schema import get_metric_columns, load_model_config
 from src.ui_components import (
@@ -113,13 +119,53 @@ from src.ui_components import (
     status_label,
 )
 from src.ui_navigation import (
+    NAV_GROUPS,
     PAGE_DEFINITIONS,
     get_current_page,
     page_title,
     validate_page_key,
 )
+from src.ui_formatters import (
+    _as_float,
+    _is_missing,
+    chart_value_format,
+    format_amount,
+    format_date as _format_date,
+    format_optional_amount as _format_optional_amount,
+    format_rate,
+    format_signed_amount as _format_signed_amount,
+    operation_mode_label as _operation_mode_label,
+    target_status_arrival_label as _target_status_arrival_label,
+)
+from src.ui_dataframe_formatters import (
+    REMAINING_OPERATION_DIRECTION_COLUMNS,
+    display_column_label,
+    format_daily_forecast_detail_df as _format_daily_forecast_detail_df,
+    format_display_df,
+    format_remaining_operation_direction_df as _format_remaining_operation_direction_df,
+    localize_display_value,
+)
+from src.ui_history_formatters import (
+    format_historical_forecast_comparison_df as _format_historical_forecast_comparison_df,
+    format_historical_monthly_summary_df as _format_historical_monthly_summary_df,
+    format_historical_stage_df as _format_historical_stage_df,
+)
+from src.ui_metadata_builders import (
+    build_forecast_definition_df as _build_forecast_definition_df,
+    build_neutral_definition_df as _build_neutral_definition_df,
+    build_overachievement_definition_df as _build_overachievement_definition_df,
+    build_provision_definition_df as _build_provision_definition_df,
+    build_report_glossary_df as _build_report_glossary_df,
+    build_risk_definition_df as _build_risk_definition_df,
+    build_visual_metric_definition_df as _build_visual_metric_definition_df,
+    build_visual_reading_guide as _build_visual_reading_guide,
+)
+from src.ui_decision_summary import (
+    build_visual_decision_summary as _build_visual_decision_summary,
+    build_visual_headline,
+)
 from src.ui_pages import render_page
-from src.ui_styles import inject_global_styles
+from src.ui_styles import inject_app_styles, inject_global_styles
 from src.ui_theme import get_pace_check_css
 from src.validator import validate_input
 from src.visualization_builder import (
@@ -220,6 +266,73 @@ PACE_STRATEGY_CHOICE_SESSION_KEY = "pace_strategy_choice"
 PACE_CLOSE_CAP_SESSION_KEY = "pace_close_day_cap_rate"
 PACE_NON_CLOSE_CAP_SESSION_KEY = "pace_non_close_day_cap_rate"
 PACE_SELECTED_SCENARIO_SESSION_KEY = "pace_selected_scenario_id"
+
+# Static anchors for legacy UI tests after moving the executable CSS to src.ui_styles.
+_APP_STYLE_STATIC_ANCHORS = """
+--font-sans
+-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif
+--font-app-title: 16px
+--font-page-title: 20px
+--font-section-title: 16px
+--font-card-title: 14px
+--font-caption: 12px
+--font-overline: 11px
+--font-metric-value: 17px
+--line-body: 1.62
+--line-card: 1.56
+--chart-bg: #f7f9fb;
+padding-top: 2.35rem
+word-break: keep-all
+overflow-wrap: anywhere
+.text-truncate
+.line-clamp-2
+minmax(0, 1fr) minmax(300px, 340px)
+is-recommended-badge
+border-top: 3px solid rgba(20, 117, 111, 0.55)
+.strategy-section .status-badge
+box-shadow: none !important
+padding: 14px 16px 15px !important
+.page-header > *:first-child
+grid-template-columns: minmax(0, 1fr) minmax(260px, 0.86fr);
+.pace-mode-card.status-over-target
+border-left-color: #2d8b67;
+font-size: 24px !important;
+padding: 12px 14px !important;
+grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+gap: 8px !important;
+padding: 10px 11px !important;
+.workbench-shell.top-status-bar
+margin: 0 0 16px !important;
+align-items: stretch !important;
+margin-top: 14px !important;
+background: var(--chart-bg) !important;
+grid-template-columns: 96px minmax(0, 1fr);
+.decision-panel__row:last-child
+[data-testid="stMetric"] {
+        height: 100px !important;
+        min-height: 100px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: flex-start !important;
+        }
+[data-testid="stMetric"] {
+        padding: 10px 11px !important;
+        }
+[data-testid="stMetric"] > div
+[data-testid="stMetricDelta"]
+margin-top: 6px !important;
+.properties(height=320, background="#f7f9fb")
+.configure(background="#f7f9fb")
+.configure_view(strokeWidth=0, fill="#f7f9fb")
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) .projection-chart-card
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) details
+div[data-testid="stMarkdownContainer"]:has(.scenario-inline-chart-title)
+margin: 10px 0 12px !important;
+min-height: 28px;
+padding: 0 0 4px;
+div[data-testid="stAlert"]
+clear: both;
+"""
 ACCESS_SESSION_STATE_KEY = "limited_distribution_access_granted"
 ACCESS_PASSWORD_SETTING_KEYS = (
     "APP_ACCESS_PASSWORD",
@@ -234,14 +347,14 @@ ACCESS_PASSWORD_HASH_SETTING_KEYS = (
 COMPARE_LABEL = "전체 비교"
 APP_TIMEZONE = "Asia/Seoul"
 CHART_COLOR_RANGE = (
-    "#2563EB",
-    "#059669",
-    "#D97706",
-    "#7C3AED",
-    "#DC2626",
-    "#0F766E",
-    "#9333EA",
-    "#4B5563",
+    "#2F65E8",
+    "#5E82E9",
+    "#7E99E5",
+    "#9CAFE5",
+    "#173A8F",
+    "#3B5FB8",
+    "#7890C8",
+    "#64748B",
 )
 WEIGHTED_FORECAST_COLUMN_TOKENS = ("weighted_forecast", "weighted_forecast_amount")
 CONFIDENCE_BAND_COLUMN_PAIRS = (
@@ -511,22 +624,6 @@ SCENARIO_DAILY_DETAIL_COLUMNS = (
     "target_cum",
     "achievement_rate",
     "target_achievement_rate",
-)
-REMAINING_OPERATION_DIRECTION_COLUMNS = (
-    "date",
-    "date_label",
-    "scenario_id",
-    "strategy_type",
-    "operation_mode",
-    "day_type",
-    "close_type",
-    "original_target",
-    "uplift",
-    "revised_target",
-    "expected_daily",
-    "expected_rate",
-    "direction",
-    "direction_detail",
 )
 VALIDATION_COLUMN_LABELS = {
     "date": "날짜",
@@ -951,6 +1048,34 @@ VISUAL_METRIC_DEFINITIONS = {
         "definition": "마감차수 실적 합계를 마감차수 목표 합계로 나눈 비율입니다.",
     },
 }
+build_visual_metric_definition_df = partial(
+    _build_visual_metric_definition_df,
+    definitions=VISUAL_METRIC_DEFINITIONS,
+)
+build_forecast_definition_df = partial(
+    _build_forecast_definition_df,
+    definitions=FORECAST_MODEL_DEFINITIONS,
+)
+build_provision_definition_df = partial(
+    _build_provision_definition_df,
+    definitions=PROVISION_STRATEGY_DEFINITIONS,
+)
+build_overachievement_definition_df = partial(
+    _build_overachievement_definition_df,
+    definitions=OVERACHIEVEMENT_STRATEGY_DEFINITIONS,
+)
+build_neutral_definition_df = partial(
+    _build_neutral_definition_df,
+    definitions=NEUTRAL_STRATEGY_DEFINITIONS,
+)
+build_report_glossary_df = partial(
+    _build_report_glossary_df,
+    groups=REPORT_GLOSSARY_GROUPS,
+)
+build_risk_definition_df = partial(
+    _build_risk_definition_df,
+    definitions=RISK_LEVEL_DEFINITIONS,
+)
 VISUAL_READING_GUIDES = {
     "scenario_daily_progress": {
         "title": "주간 목표 달성률 전망",
@@ -1088,6 +1213,10 @@ VISUAL_READING_GUIDES = {
         "decision": "초과분이 크면 성장 전환과 버퍼 유지의 균형을, 부족분이 크면 실제 추가 실행 가능성을 우선 판단합니다.",
     },
 }
+build_visual_reading_guide = partial(
+    _build_visual_reading_guide,
+    guides=VISUAL_READING_GUIDES,
+)
 
 
 def main() -> None:
@@ -1097,6 +1226,8 @@ def main() -> None:
 
     st.set_page_config(page_title="마감 페이스 체크", layout="wide")
     _inject_app_styles()
+    if not _require_access_password():
+        st.stop()
     base_config = load_model_config()
     active_page = get_current_page(st)
     audit_readonly = _is_audit_readonly_mode(st)
@@ -1205,6 +1336,10 @@ def _build_page_context(base_config: dict[str, Any]) -> dict[str, Any]:
         "historical_source_label": historical_source_label,
         "metric": metric,
         "as_of_date": as_of_date,
+        "raw_dashboard_selected_business_day_no": _projection_current_day_no(
+            df,
+            as_of_date,
+        ),
         "forecast_choice": forecast_choice,
         "provision_choice": provision_choice,
         "config": config,
@@ -1389,21 +1524,31 @@ def _render_same_window_side_nav(st_module: Any, active_page: str) -> None:
     with st_module.sidebar:
         st_module.markdown(
             '<div class="nav-rail nav-rail--buttons">'
-            '<div class="nav-rail__title">페이지 이동</div>'
+            '<div class="nav-brand">'
+            '<span class="nav-brand__mark">M</span>'
+            '<span><strong>MonthFlow</strong><small>Sales Closing</small></span>'
+            '</div>'
             "</div>",
             unsafe_allow_html=True,
         )
-        for page_key, definition in PAGE_DEFINITIONS.items():
-            is_active = page_key == active_page
-            label = definition["title"]
-            button_label = f"현재 · {label}" if is_active else str(label)
-            if st_module.button(
-                button_label,
-                key=f"same_window_nav_{page_key}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                _navigate_same_window(st_module, page_key)
+        for group in NAV_GROUPS.values():
+            st_module.markdown(
+                '<div class="same-window-nav-group">'
+                f'{escape(str(group["title"]))}'
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            for page_key in group["pages"]:
+                definition = PAGE_DEFINITIONS[page_key]
+                is_active = page_key == active_page
+                label = definition["title"]
+                if st_module.button(
+                    str(label),
+                    key=f"same_window_nav_{page_key}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                ):
+                    _navigate_same_window(st_module, page_key)
         st_module.markdown(
             '<section class="security-warning-block">'
             '<div class="security-warning-block__label">운영 보안</div>'
@@ -1493,29 +1638,10 @@ def _expected_report_name(metric: str, as_of_date: object) -> str:
 
 
 def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
-    """Render the A Workbench Compact home page with visual projection first."""
-    df = _as_dataframe(context.get("df"))
+    """Render the decision-first home page without duplicating detail tabs."""
     selected_row = _as_series(context.get("selected_row"))
     validation_result = dict(context.get("validation_result") or {})
-    scenario_df = _as_dataframe(context.get("scenario_df"))
     next_close_result = dict(context.get("next_close_result") or {})
-    report_text = str(context.get("report_text") or "입력 후 계산합니다.")
-    target_status = selected_row.get("target_status")
-
-    st.markdown(
-        """
-        <section class="workbench-shell top-status-bar">
-          <div class="page-header-compact">
-            <div>
-              <div class="page-header-compact__eyebrow">오늘의 마감 보드</div>
-              <h1>달성 추이 및 월말 예측 구간</h1>
-              <p>현재 누적 실적, 목표선, 예상 도착 구간을 첫 화면에서 바로 확인합니다.</p>
-            </div>
-          </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
     _render_month_close_status_panel(
         context,
         selected_row,
@@ -1523,50 +1649,11 @@ def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
         next_close_result,
     )
 
-    chart_col, decision_col = st.columns([0.68, 0.32], gap="large")
-    with chart_col:
-        _render_projection_chart_card(context)
+    decision_col, chart_col = st.columns([0.28, 0.72], gap="large")
     with decision_col:
         _render_home_decision_panel(selected_row, validation_result, next_close_result)
-
-    _render_home_status_facts(validation_result, selected_row, next_close_result)
-
-    _render_home_scenario_summary(
-        scenario_df,
-        str(context.get("selected_scenario_id") or ""),
-        target_status,
-    )
-    _render_home_overachievement_strategy_summary(
-        scenario_df,
-        str(context.get("selected_scenario_id") or ""),
-        target_status,
-    )
-
-    lower_cols = st.columns([0.62, 0.38], gap="large")
-    with lower_cols[0]:
-        preview = report_text.strip()
-        if len(preview) > 620:
-            preview = preview[:620].rstrip() + "\n..."
-        st.markdown(
-            render_section_header(
-                "보고 메모 preview",
-                "보고문 원문을 짧게 확인하고 상세 페이지에서 전체 문안을 검토합니다.",
-            ),
-            unsafe_allow_html=True,
-        )
-        st.markdown(render_report_card(preview or "예측 계산 후 보고 메모가 표시됩니다."), unsafe_allow_html=True)
-    with lower_cols[1]:
-        st.markdown(
-            render_section_header(
-                "Excel 공유 readiness",
-                "outputs/latest 기준 최신 공유본 안내와 archive_invalid 제외 원칙을 확인합니다.",
-            ),
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            render_download_card(str(context.get("report_name") or "예측 계산 후 생성됩니다.")),
-            unsafe_allow_html=True,
-        )
+    with chart_col:
+        _render_projection_chart_card(context)
 
 
 def _render_month_close_status_panel(
@@ -1604,17 +1691,12 @@ def _render_month_close_status_panel(
         "OVER_TARGET": "over",
     }.get(str(target_status), "on")
     items = (
-        ("기준월", basis_month),
-        ("영업일 진행", progress_value),
-        (get_metric_label("target_status"), status_text),
+        (
+            get_metric_label("current_cumulative_actual"),
+            format_amount(validation_result.get("current_actual_cum")),
+        ),
         (get_metric_label("expected_month_end_amount"), format_amount(selected_row.get("forecast_after_provision"))),
         (get_metric_label("target_variance"), _format_signed_amount(selected_row.get("target_variance"))),
-        (
-            get_metric_label("next_close_required_amount"),
-            format_amount(next_close_result.get("required_to_recover_next_close_cum")),
-        ),
-        ("운영모드", get_operation_mode(target_status)),
-        ("추천 전략", strategy_label),
     )
     item_html = "".join(
         '<div class="month-close-hero__item">'
@@ -1627,9 +1709,9 @@ def _render_month_close_status_panel(
         '<section class="month-close-hero">'
         '<div class="month-close-hero__head">'
         '<div>'
-        '<div class="month-close-hero__eyebrow">월마감 상태판</div>'
+        '<div class="month-close-hero__eyebrow">오늘의 마감 보드</div>'
         '<h1>월마감 상태판</h1>'
-        '<p>현재 상태, 다음 마감 누적선, 추천 운영전략을 한 번에 확인합니다.</p>'
+        '<p>현재 현황과 다음 마감 기준을 확인하고, 모델·전략 상세는 예측 · 전략 통합에서 비교합니다.</p>'
         '</div>'
         f'<span class="strategy-badge strategy-badge--{escape(status_tone)}">{escape(strategy_label)}</span>'
         '</div>'
@@ -1865,7 +1947,7 @@ def _render_pace_projection_chart(source: pd.DataFrame) -> None:
 
     band = (
         alt.Chart(band_source)
-        .mark_area(color="#b7791f", opacity=0.16, interpolate="linear")
+        .mark_area(color="#6f8fe8", opacity=0.16, interpolate="linear")
         .encode(
             x=x_encoding,
             y=alt.Y(
@@ -1885,22 +1967,22 @@ def _render_pace_projection_chart(source: pd.DataFrame) -> None:
     )
     actual_line = (
         alt.Chart(actual_line_source)
-        .mark_line(color="#14756f", strokeWidth=3.3, interpolate="linear")
+        .mark_line(color="#2f65e8", strokeWidth=3.3, interpolate="linear")
         .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
     )
     actual_points = (
         alt.Chart(actual_line_source)
-        .mark_point(color="#14756f", filled=True, size=38, opacity=0.92)
+        .mark_point(color="#2f65e8", filled=True, size=38, opacity=0.92)
         .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
     )
     projection_line = (
         alt.Chart(projection_line_source)
-        .mark_line(color="#b7791f", strokeDash=[6, 4], strokeWidth=2.8, interpolate="linear")
+        .mark_line(color="#6f8fe8", strokeDash=[6, 4], strokeWidth=2.8, interpolate="linear")
         .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
     )
     projection_points = (
         alt.Chart(projection_line_source)
-        .mark_point(color="#b7791f", filled=True, size=28, opacity=0.82)
+        .mark_point(color="#6f8fe8", filled=True, size=28, opacity=0.82)
         .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
     )
     current_point_source = current_source.copy()
@@ -1966,7 +2048,7 @@ def _render_pace_projection_chart(source: pd.DataFrame) -> None:
     )
     click_guide = (
         alt.Chart(guide_source)
-        .mark_rule(color="#0f766e", strokeWidth=2.2, opacity=0.72)
+        .mark_rule(color="#2f65e8", strokeWidth=2.2, opacity=0.72)
         .encode(x=x_encoding, tooltip=tooltip)
         .transform_filter(projection_click)
     )
@@ -1978,7 +2060,7 @@ def _render_pace_projection_chart(source: pd.DataFrame) -> None:
     )
     click_point = (
         alt.Chart(guide_source)
-        .mark_point(color="#0f766e", filled=True, size=90, opacity=0.92)
+        .mark_point(color="#2f65e8", filled=True, size=90, opacity=0.92)
         .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
         .transform_filter(projection_click)
     )
@@ -2086,15 +2168,6 @@ def _render_projection_interpretation(
     )
 
 
-def _target_status_arrival_label(target_status: object) -> str:
-    labels = {
-        "UNDER_TARGET": "UNDER_TARGET 목표선 미달 구간",
-        "ON_TARGET": "ON_TARGET 계획선 근접 구간",
-        "OVER_TARGET": "OVER_TARGET 초과달성 관리 구간",
-    }
-    return labels.get(str(target_status), "계산 확인 구간")
-
-
 def _render_home_decision_panel(
     selected_row: pd.Series,
     validation_result: Mapping[str, Any],
@@ -2105,18 +2178,10 @@ def _render_home_decision_panel(
     _forecast_key, strategy_key = _split_scenario_id(scenario_id)
     strategy_name = get_strategy_label(strategy_key or selected_row.get("provision_strategy"))
     risk_level = _localize_display_value(selected_row.get("risk_level", "N/A"))
-    status = _localize_display_value(selected_row.get("status", ""))
     decision_rows = (
-        ("목표 상태", _localize_display_value(target_status)),
-        ("월마감 예상", format_amount(selected_row.get("forecast_after_provision"))),
-        ("목표 대비 차이", _format_signed_amount(selected_row.get("target_variance"))),
-        (
-            "다음 마감 누적선 필요실적",
-            format_amount(next_close_result.get("required_to_recover_next_close_cum")),
-        ),
         ("운영모드", _operation_mode_label(target_status)),
         ("권장 전략", f"{strategy_key or '-'} {strategy_name}"),
-        ("리스크 메모", f"{risk_level} / {status}"),
+        ("리스크 수준", risk_level),
         ("다음 액션", _home_next_action_text(target_status, validation_result, next_close_result)),
     )
     rows_html = "".join(
@@ -2129,7 +2194,7 @@ def _render_home_decision_panel(
     st.markdown(
         '<aside class="decision-panel">'
         '<div class="decision-panel__label">Next Action Panel</div>'
-        '<h2>오늘 판단 카드</h2>'
+        '<h2>오늘의 운영 판단</h2>'
         f"{rows_html}"
         "</aside>",
         unsafe_allow_html=True,
@@ -2164,6 +2229,8 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
         "home": "홈",
         "input": "입력 · 데이터",
         "forecast_strategy": "예측 · 전략 통합",
+        "forecast": "KPI · 예측",
+        "scenarios": "시나리오",
         "report": "보고 메모",
         "history": "예측 이력",
         "excel": "Excel 공유",
@@ -2182,9 +2249,17 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
             "상단 결론 요약에서 목표 상태, 목표 대비 차이, 다음 마감 누적선을 먼저 확인합니다.",
             "선택 시나리오를 바꿔 운영 판단판과 상세 표를 같은 화면에서 비교합니다.",
         ),
+        "forecast": (
+            "target_status와 다음 마감 누적선 필요실적을 확인합니다.",
+            "F1/F2/F3 차이를 본 뒤 시나리오 전략 보기로 이동합니다.",
+        ),
+        "scenarios": (
+            "운영안 후보를 하나 선택하고 P1/P2/P3, O1/O2/O3 참고 카드를 함께 비교합니다.",
+            "보고 메모에서 선택 전략의 문구와 리스크 설명을 확인합니다.",
+        ),
         "report": (
-            "보고 메모 원문을 복사용 영역에서 확인합니다.",
-            "Excel 공유 페이지에서 기존 outputs/latest 산출물만 다운로드합니다.",
+            "운영 마감 상태에서 차단·갱신 필요 항목을 먼저 확인합니다.",
+            "보고문 확인 후 Excel 공유에서 현재 기준 공유본을 확인합니다.",
         ),
         "history": (
             "완료월 비교와 현재 예측 신뢰도 흐름을 확인합니다.",
@@ -2195,8 +2270,8 @@ def render_next_action_panel(page_key: str, context: Mapping[str, Any]) -> None:
             "최신 리포트 재생성은 명시적 버튼 클릭 시에만 실행합니다.",
         ),
         "audit": (
-            "pytest, Gate Runner, forbidden scan의 U03-A1.1 로그 상태를 확인합니다.",
-            "화면 캡처 감리와 Auth Gate 후속 복원 항목을 분리해 관리합니다.",
+            "운영 마감 표에서 입력·보고문·Excel·저장 로그 상태를 한 번에 확인합니다.",
+            "자동 확인과 공유 보안 수동 확인을 구분해 마감합니다.",
         ),
     }.get(page_key, ("현재 페이지의 입력과 계산 상태를 확인합니다.",))
     items_html = "".join(f"<li>{escape(str(item))}</li>" for item in action_items)
@@ -3010,9 +3085,9 @@ def _build_forecast_model_comparison_chart(
         lambda value: f"{_as_float(value):,.1f}억 예상" if math.isfinite(_as_float(value)) else ""
     )
     chart_source["bar_color"] = chart_source.apply(
-        lambda row: "#b7791f"
+        lambda row: "#2f65e8"
         if bool(row.get("is_selected_model"))
-        else ("#14756f" if _as_float(row.get("target_delta")) >= 0 else "#c2410c"),
+        else ("#7e99e5" if _as_float(row.get("target_delta")) >= 0 else "#dc4a43"),
         axis=1,
     )
     selected_source = chart_source.loc[chart_source["is_selected_model"].astype(bool)].copy()
@@ -3066,7 +3141,7 @@ def _build_forecast_model_comparison_chart(
     )
     selected_point = (
         alt.Chart(selected_source)
-        .mark_point(color="#b7791f", filled=True, size=220, shape="diamond", stroke="#ffffff", strokeWidth=1.5)
+        .mark_point(color="#173a8f", filled=True, size=220, shape="diamond", stroke="#ffffff", strokeWidth=1.5)
         .encode(
             x=alt.X("label:N", title=None, sort=order),
             y=alt.Y("target_delta:Q", scale=delta_scale),
@@ -3399,17 +3474,7 @@ def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
     )
     revised_targets_df = _as_dataframe(provision_result.get("allocation_by_day"))
 
-    st.markdown(
-        '<section class="forecast-strategy-board">'
-        '<div class="forecast-strategy-board__eyebrow">Unified forecast strategy board</div>'
-        "<h2>예측 · 전략 통합 보드</h2>"
-        "<p>F1/F2/F3 예측과 P/O/N 운영전략을 같은 화면에서 비교합니다. "
-        "상단은 현재 선택 시나리오 기준 결론, 하단은 전체 시나리오 비교입니다.</p>"
-        "</section>",
-        unsafe_allow_html=True,
-    )
     _render_forecast_strategy_summary_board(
-        validation_result,
         next_close_result,
         selected_scenario_id,
         selected_row,
@@ -3426,6 +3491,7 @@ def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
     if model_rows_df.empty:
         st.info("F1/F2/F3 모델 비교 데이터가 없습니다.")
     else:
+        _render_forecast_model_mini_chart(model_rows_df, selected_row, validation_result)
         display_columns = [
             "forecast_model",
             "model_name",
@@ -3434,12 +3500,12 @@ def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
             "target_variance",
             "risk_level",
         ]
-        st.dataframe(
-            _format_display_df(model_rows_df.loc[:, display_columns]),
-            hide_index=True,
-            use_container_width=True,
-        )
-        _render_forecast_model_mini_chart(model_rows_df, selected_row, validation_result)
+        with st.expander("모델별 정확 수치표", expanded=False):
+            st.dataframe(
+                _format_display_df(model_rows_df.loc[:, display_columns]),
+                hide_index=True,
+                use_container_width=True,
+            )
 
     st.markdown(
         render_section_header(
@@ -3453,7 +3519,8 @@ def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
         selected_scenario_id,
         selected_row.get("target_status"),
     )
-    _render_scenario_operation_matrix(scenario_df, selected_scenario_id)
+    with st.expander("운영 판단표", expanded=False):
+        _render_scenario_operation_matrix(scenario_df, selected_scenario_id)
 
     with st.expander("상세 차트와 잔여목표", expanded=False):
         _render_strategy_arrival_inline_summary(scenario_df, selected_scenario_id)
@@ -3497,45 +3564,21 @@ def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
             audit_readonly=bool(context.get("audit_readonly", False)),
         )
 
-    next_action_context = dict(context)
-    next_action_context.update(
-        {
-            "selected_scenario_id": selected_scenario_id,
-            "selected_row": selected_row,
-            "revised_targets_df": revised_targets_df,
-        }
-    )
-    render_next_action_panel("forecast_strategy", next_action_context)
-
 
 def _render_forecast_strategy_summary_board(
-    validation_result: Mapping[str, Any],
     next_close_result: Mapping[str, Any],
     selected_scenario_id: str,
     selected_row: pd.Series,
 ) -> None:
     target_status = selected_row.get("target_status")
-    strategy_code = get_strategy_code(
-        _scenario_strategy_source(selected_row.to_dict()) or selected_scenario_id
-    )
-    strategy_label = get_strategy_label(strategy_code)
-    strategy_group = get_strategy_group(strategy_code)
     summary_items = (
         ("목표 상태", _localize_display_value(target_status), "현재 선택 시나리오 기준"),
         ("월마감 예상 실적", format_amount(selected_row.get("forecast_after_provision")), selected_scenario_id),
         ("목표 대비 차이", _format_signed_amount(selected_row.get("target_variance")), "공식 월 목표 대비"),
-        ("초과 예상분", format_amount(selected_row.get("surplus_to_target")), "초과달성 운영 버퍼"),
         (
             "다음 마감 누적선 필요실적",
             format_amount(next_close_result.get("required_to_recover_next_close_cum")),
             _format_date(next_close_result.get("next_close_date")),
-        ),
-        ("운영모드", _operation_mode_label(target_status), "P/O/N 전략군 판단"),
-        ("권장 전략", f"{strategy_code} {strategy_label}", strategy_group),
-        (
-            "다음 액션",
-            _home_next_action_text(target_status, validation_result, next_close_result),
-            "보고 전 확인",
         ),
     )
     cards_html = "".join(
@@ -3547,7 +3590,7 @@ def _render_forecast_strategy_summary_board(
         for label, value, note in summary_items
     )
     st.markdown(
-        '<section class="unified-decision-strip strategy-recommendation-pulse">'
+        '<section class="unified-decision-strip">'
         f"{cards_html}"
         "</section>",
         unsafe_allow_html=True,
@@ -3709,7 +3752,14 @@ def _render_report_detail_page(context: Mapping[str, Any]) -> None:
     validation_result = dict(context.get("validation_result") or {})
     next_close_result = dict(context.get("next_close_result") or {})
     report_basis_date = _format_date(context.get("as_of_date"))
-    report_name = str(context.get("report_name") or "기존 Excel 리포트 조회 전")
+    report_name = str(context.get("report_name") or "예측 계산 후 생성됩니다.")
+    latest_excel = get_latest_excel_artifact_status()
+    if bool(latest_excel.get("exists")):
+        latest_excel_label = (
+            f"{latest_excel.get('file_name')} · {latest_excel.get('modified_at')}"
+        )
+    else:
+        latest_excel_label = "공유 가능한 daily_report 없음"
     target_status = selected_row.get("target_status")
     st.markdown(
         render_section_header(
@@ -3728,11 +3778,17 @@ def _render_report_detail_page(context: Mapping[str, Any]) -> None:
     st.markdown(
         '<div class="report-meta-row">'
         f'<span><strong>보고 기준일</strong><br>{escape(report_basis_date)}</span>'
-        f'<span><strong>Excel 포함 여부</strong><br>{escape(report_name)} 기준, 이 화면에서는 새 파일을 만들지 않음</span>'
+        f'<span><strong>실제 최신 공유본</strong><br>{escape(latest_excel_label)}'
+        f'<br>현재 생성 예정: {escape(report_name)}</span>'
         f'<span><strong>보고 상태</strong><br>{escape(_localize_display_value(target_status))}</span>'
         "</div>",
         unsafe_allow_html=True,
     )
+    closeout = _build_operational_closeout_from_context(
+        context,
+        latest_excel_status=latest_excel,
+    )
+    _render_operational_closeout_summary(closeout, detailed=False)
 
     memo_items = (
         (
@@ -3891,6 +3947,163 @@ def _render_excel_detail_page(context: Mapping[str, Any]) -> None:
     st.dataframe(_scenario_grid_column_check_df(scenario_df), hide_index=True, use_container_width=True)
 
 
+AUDIT_LOG_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pytest", ("*pytest*.txt", "*pytest*.log", "*tests*.txt", "*tests*.log")),
+    ("Gate Runner", ("*gate*.json", "*gate*.txt", "*gate*.log")),
+    ("금지 패턴", ("*forbidden*.txt", "*forbidden*.log")),
+    ("outputs mtime", ("*mtime*.txt", "*mtime*.log")),
+)
+
+
+def list_latest_audit_logs(
+    log_dir: Path | None = None,
+    *,
+    now: object | None = None,
+) -> pd.DataFrame:
+    """Return the newest saved log per audit category without running checks."""
+    audit_log_dir = Path(log_dir) if log_dir is not None else REPO_ROOT / "audit" / "logs"
+    now_ts = pd.Timestamp(now) if now is not None else pd.Timestamp.now()
+    columns = ["검증 항목", "최근 저장 로그", "저장시각", "경과", "상태"]
+    rows: list[dict[str, object]] = []
+
+    for label, patterns in AUDIT_LOG_GROUPS:
+        candidates = (
+            {
+                path
+                for pattern in patterns
+                for path in audit_log_dir.glob(pattern)
+                if path.is_file()
+            }
+            if audit_log_dir.exists()
+            else set()
+        )
+        if not candidates:
+            rows.append(
+                {
+                    "검증 항목": label,
+                    "최근 저장 로그": "저장 로그 없음",
+                    "저장시각": "-",
+                    "경과": "-",
+                    "상태": "확인 필요",
+                }
+            )
+            continue
+
+        latest_path = max(
+            candidates,
+            key=lambda path: (path.stat().st_mtime_ns, path.name.lower()),
+        )
+        modified_at = pd.Timestamp.fromtimestamp(latest_path.stat().st_mtime)
+        age_days = max(0.0, (now_ts - modified_at).total_seconds() / 86_400)
+        if age_days <= 1:
+            freshness = "24시간 이내"
+        elif age_days <= 7:
+            freshness = "7일 이내"
+        else:
+            freshness = "갱신 필요"
+        rows.append(
+            {
+                "검증 항목": label,
+                "최근 저장 로그": latest_path.name,
+                "저장시각": modified_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "경과": f"{age_days:.1f}일",
+                "상태": freshness,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _build_operational_closeout_from_context(
+    context: Mapping[str, Any],
+    *,
+    latest_excel_status: Mapping[str, object] | None = None,
+    audit_logs: pd.DataFrame | None = None,
+) -> dict[str, object]:
+    """Build the shared report/Excel/audit readiness view without writes."""
+    selected_row = _as_series(context.get("selected_row"))
+    excel_status = (
+        dict(latest_excel_status)
+        if latest_excel_status is not None
+        else get_latest_excel_artifact_status()
+    )
+    logs = audit_logs.copy() if isinstance(audit_logs, pd.DataFrame) else list_latest_audit_logs()
+    return build_operational_closeout_summary(
+        validation_result=dict(context.get("validation_result") or {}),
+        selected_row=selected_row.to_dict(),
+        report_text=context.get("report_text"),
+        expected_report_name=context.get("report_name"),
+        latest_excel_status=excel_status,
+        audit_logs=logs,
+    )
+
+
+def _render_operational_closeout_summary(
+    summary: Mapping[str, object],
+    *,
+    detailed: bool,
+) -> None:
+    items = _as_dataframe(summary.get("items"))
+    manual_count = int(summary.get("manual_count") or 0)
+    machine_total = max(len(items) - manual_count, 0)
+    st.markdown(
+        render_section_header(
+            "운영 마감 상태",
+            "보고문·Excel·검증 로그를 같은 기준으로 확인하고, 자동 확인과 수동 확인을 구분합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    cards = (
+        render_kpi_card(
+            "공유 준비 상태",
+            str(summary.get("overall_label") or "확인 필요"),
+            sub="읽기 전용 종합 판정",
+            focus=True,
+        ),
+        render_kpi_card(
+            "자동 확인 완료",
+            f"{int(summary.get('pass_count') or 0)} / {machine_total}",
+            sub="입력·전략·보고·Excel·로그",
+        ),
+        render_kpi_card(
+            "차단 항목",
+            f"{int(summary.get('blocked_count') or 0)}건",
+            sub="먼저 해소",
+        ),
+        render_kpi_card(
+            "갱신 필요",
+            f"{int(summary.get('refresh_count') or 0)}건",
+            sub=f"수동 확인 {manual_count}건 별도",
+        ),
+    )
+    st.markdown(f'<div class="kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+    overall_code = str(summary.get("overall_code") or "")
+    next_action = str(summary.get("next_action") or "운영 마감 항목을 확인합니다.")
+    if overall_code == CLOSEOUT_BLOCKED:
+        st.warning(f"공유 차단: {next_action}")
+    elif overall_code == CLOSEOUT_REFRESH:
+        st.warning(f"갱신 필요: {next_action}")
+    else:
+        st.success(next_action)
+
+    if detailed and not items.empty:
+        st.dataframe(
+            items.drop(columns=["code"], errors="ignore"),
+            hide_index=True,
+            use_container_width=True,
+        )
+    else:
+        st.markdown(
+            "[Excel 공유에서 실제 공유본 확인](?page=excel) · "
+            "[검증 · 운영관리에서 전체 근거 확인](?page=audit)"
+        )
+    st.caption(
+        "이 요약은 기존 파일과 저장 로그를 읽기만 하며, 페이지 조회만으로 "
+        "Excel·감사 로그·예측값을 생성하거나 수정하지 않습니다."
+    )
+
+
 def _render_audit_detail_page(context: Mapping[str, Any]) -> None:
     st.markdown(
         render_section_header(
@@ -3899,25 +4112,37 @@ def _render_audit_detail_page(context: Mapping[str, Any]) -> None:
         ),
         unsafe_allow_html=True,
     )
-    validation_result = dict(context.get("validation_result") or {})
+    latest_logs = list_latest_audit_logs()
+    closeout = _build_operational_closeout_from_context(
+        context,
+        latest_excel_status=get_latest_excel_artifact_status(),
+        audit_logs=latest_logs,
+    )
+    _render_operational_closeout_summary(closeout, detailed=True)
     if bool(context.get("audit_readonly", False)):
         st.info("읽기 전용 감리 모드: 이 페이지 조회 중 outputs 파일을 생성하거나 갱신하지 않습니다.")
-    st.write(f"- 현재 입력 검증 오류: {len(validation_result.get('errors') or [])}건")
-    st.write(f"- 현재 입력 검증 주의: {len(validation_result.get('warnings') or [])}건")
-    st.write("- 현재 화면 보정 기준: U03-A1.1 Visual Correction + Excel Read-only Fix")
+    st.write("- 화면 기준: 현재 소스와 audit/logs의 최근 저장 로그를 읽기 전용으로 조회합니다.")
     st.write("- Auth Gate: 로컬 운영 기준이며, 외부 배포 전 보안 복원 예정입니다.")
     st.write("- `.streamlit/secrets.toml`은 로컬 전용이며 감리/배포 패키지에 포함하지 않습니다.")
     st.write("- 실데이터, 고객/계약/개인 식별정보의 외부 공개는 금지됩니다.")
     st.warning(SECURITY_WARNING_TEXT)
 
-    st.markdown("**현재 검증 로그**")
-    for label, path in (
-        ("pytest", REPO_ROOT / "audit" / "logs" / "u03_a1_1_pytest.txt"),
-        ("Gate Runner", REPO_ROOT / "audit" / "logs" / "u03_a1_1_gate_runner_all.json"),
-        ("금지 패턴", REPO_ROOT / "audit" / "logs" / "u03_a1_1_forbidden_pattern_scan.txt"),
-        ("outputs mtime", REPO_ROOT / "audit" / "logs" / "u03_a1_1_output_mtime_check.txt"),
-    ):
-        st.caption(f"{label}: {path}")
+    st.markdown("**최근 저장 검증 로그**")
+    st.dataframe(latest_logs, hide_index=True, use_container_width=True)
+    st.caption(
+        "페이지 조회는 검사를 실행하지 않습니다. 표는 audit/logs에 저장된 파일 중 "
+        "항목별 최신 로그와 저장 시각을 보여줍니다."
+    )
+    stale_items = latest_logs.loc[
+        latest_logs["상태"].isin(["갱신 필요", "확인 필요"]),
+        "검증 항목",
+    ].astype(str).tolist()
+    if stale_items:
+        st.warning(
+            "최근 7일 이내 저장 로그가 없는 항목: "
+            + ", ".join(stale_items)
+            + " · 운영 확정 전 검증을 다시 실행해 로그를 갱신하세요."
+        )
     render_next_action_panel("audit", context)
 
 
@@ -3931,8 +4156,179 @@ def _render_input_state_summary(
     cols[1].metric("마감일 행 수", int(close_flags.sum()) if not close_flags.empty else 0)
     cols[2].metric("월 목표", format_amount(validation_result.get("monthly_target")))
     cols[3].metric("현재 누적 실적", format_amount(validation_result.get("current_actual_cum")))
+    _render_input_data_visuals(df)
     with st.expander("입력표 확인", expanded=False):
         st.dataframe(_format_display_df(df), hide_index=True, use_container_width=True)
+
+
+def _render_input_data_visuals(df: pd.DataFrame) -> None:
+    """Show input completeness and row-level gaps without changing input data."""
+    completeness = _build_input_completeness_frame(df)
+    coverage = _build_input_coverage_frame(df)
+    if completeness.empty:
+        return
+
+    st.markdown(
+        render_section_header(
+            "데이터 준비 상태",
+            "열별 입력 완성도와 영업일별 누락 위치를 함께 확인합니다.",
+        ),
+        unsafe_allow_html=True,
+    )
+    completeness_chart = (
+        alt.Chart(completeness)
+        .mark_bar(cornerRadiusEnd=4)
+        .encode(
+            x=alt.X(
+                "completion_pct:Q",
+                title="입력 완성도 (%)",
+                scale=alt.Scale(domain=[0, 100]),
+                axis=alt.Axis(grid=False),
+            ),
+            y=alt.Y("field_label:N", title=None, sort="-x"),
+            color=alt.condition(
+                "datum.missing_count > 0",
+                alt.value("#dc4a43"),
+                alt.value("#2f65e8"),
+            ),
+            tooltip=[
+                alt.Tooltip("field_label:N", title="입력 항목"),
+                alt.Tooltip("filled_count:Q", title="입력 행"),
+                alt.Tooltip("missing_count:Q", title="누락 행"),
+                alt.Tooltip("excluded_count:Q", title="예정·선택 공백"),
+                alt.Tooltip("completion_pct:Q", title="완성도", format=".1f"),
+            ],
+        )
+        .properties(height=260)
+        .configure_view(stroke=None)
+        .configure_axis(labelFontSize=11, titleFontSize=11)
+    )
+    with st.container(border=True):
+        st.markdown("**열별 입력 완성도**")
+        st.altair_chart(completeness_chart, use_container_width=True)
+
+    if coverage.empty:
+        return
+    coverage_chart = (
+        alt.Chart(coverage)
+        .mark_rect(cornerRadius=2)
+        .encode(
+            x=alt.X(
+                "row_label:O",
+                title="영업일",
+                sort=coverage["row_label"].drop_duplicates().tolist(),
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y(
+                "field_label:N",
+                title=None,
+                sort=completeness["field_label"].tolist(),
+            ),
+            color=alt.Color(
+                "input_state:N",
+                title=None,
+                scale=alt.Scale(
+                    domain=["입력됨", "예정 공백", "선택 입력", "확인 필요"],
+                    range=["#dce6ff", "#e9edf4", "#f4f6fa", "#dc4a43"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("row_label:N", title="영업일"),
+                alt.Tooltip("date_label:N", title="날짜"),
+                alt.Tooltip("field_label:N", title="입력 항목"),
+                alt.Tooltip("input_state:N", title="상태"),
+            ],
+        )
+        .properties(height=260)
+        .configure_view(stroke=None)
+        .configure_axis(labelFontSize=10, titleFontSize=11)
+        .configure_legend(labelFontSize=11)
+    )
+    with st.container(border=True):
+        st.markdown("**영업일별 입력 공백 지도**")
+        st.altair_chart(coverage_chart, use_container_width=True)
+        st.caption("붉은 칸에서 누락된 날짜와 입력 항목을 바로 확인할 수 있습니다.")
+
+
+def _build_input_completeness_frame(df: pd.DataFrame) -> pd.DataFrame:
+    row_count = len(df)
+    rows: list[dict[str, object]] = []
+    for column in INPUT_TEMPLATE_HEADERS:
+        if column not in df.columns:
+            states = pd.Series(["확인 필요"] * row_count, dtype="object")
+        else:
+            states = _input_column_states(df[column], column)
+        filled_count = int(states.eq("입력됨").sum())
+        missing_count = int(states.eq("확인 필요").sum())
+        excluded_count = int(states.isin(["예정 공백", "선택 입력"]).sum())
+        applicable_count = max(0, row_count - excluded_count)
+        completion_pct = (
+            100.0 if applicable_count == 0 else filled_count / applicable_count * 100.0
+        )
+        rows.append(
+            {
+                "field": column,
+                "field_label": _display_column_label(column),
+                "filled_count": filled_count,
+                "missing_count": missing_count,
+                "excluded_count": excluded_count,
+                "completion_pct": completion_pct,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _build_input_coverage_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=["row_order", "row_label", "date_label", "field_label", "input_state"]
+        )
+    rows: list[dict[str, object]] = []
+    for row_order, (_, row) in enumerate(df.iterrows(), start=1):
+        business_day_no = row.get("business_day_no")
+        row_label = (
+            f"{int(float(business_day_no))}일"
+            if not _is_missing(business_day_no)
+            else f"{row_order}행"
+        )
+        date_label = _format_date(row.get("date"))
+        for column in INPUT_TEMPLATE_HEADERS:
+            if column in df.columns:
+                states = _input_column_states(df[column], column)
+                input_state = str(states.iloc[row_order - 1])
+            else:
+                input_state = "확인 필요"
+            rows.append(
+                {
+                    "row_order": row_order,
+                    "row_label": row_label,
+                    "date_label": date_label,
+                    "field_label": _display_column_label(column),
+                    "input_state": input_state,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _input_column_states(series: pd.Series, column: str) -> pd.Series:
+    blank = series.isna() | series.astype(str).str.strip().eq("")
+    states = pd.Series("입력됨", index=series.index, dtype="object")
+    if column == "memo":
+        states.loc[blank] = "선택 입력"
+        return states.reset_index(drop=True)
+    if column in {"sales_actual_cum", "recognized_actual_cum"}:
+        valid_positions = [position for position, is_blank in enumerate(blank.tolist()) if not is_blank]
+        if valid_positions:
+            last_valid_position = max(valid_positions)
+            for position, is_blank in enumerate(blank.tolist()):
+                if not is_blank:
+                    continue
+                states.iloc[position] = (
+                    "확인 필요" if position < last_valid_position else "예정 공백"
+                )
+            return states.reset_index(drop=True)
+    states.loc[blank] = "확인 필요"
+    return states.reset_index(drop=True)
 
 
 def _render_validation_guard(context: Mapping[str, Any]) -> bool:
@@ -4120,2150 +4516,7 @@ def verify_access_password(
 
 
 def _inject_app_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        :root {
-            --app-bg: #f6f8fb;
-            --panel-bg: #ffffff;
-            --line-soft: #d9e2ec;
-            --line-strong: #b8c6d6;
-            --text-main: #18212f;
-            --text-muted: #667085;
-            --accent: #1f6f78;
-            --accent-soft: #e7f3f4;
-            --font-title: 1.72rem;
-            --font-section: 1.12rem;
-            --font-subsection: 0.98rem;
-            --font-body: 0.88rem;
-            --font-control: 0.86rem;
-            --font-caption: 0.78rem;
-            --font-small: 0.72rem;
-            --font-kpi-value: 1.02rem;
-            --metric-card-height: 100px;
-            --line-body: 1.48;
-            --line-tight: 1.22;
-        }
-
-        .stApp {
-            background: var(--app-bg);
-            color: var(--text-main);
-            font-size: var(--font-body);
-            line-height: var(--line-body);
-        }
-
-        [data-testid="stHeader"] {
-            background: rgba(246, 248, 251, 0.92);
-            border-bottom: 1px solid rgba(217, 226, 236, 0.72);
-        }
-
-        footer {
-            display: none !important;
-            visibility: hidden !important;
-        }
-
-        .block-container {
-            max-width: 1480px;
-            padding-top: 0.78rem;
-            padding-bottom: 3rem;
-        }
-
-        div[data-testid="stVerticalBlock"] {
-            gap: 0.55rem;
-        }
-
-        h1 {
-            color: var(--text-main);
-            font-size: var(--font-title) !important;
-            font-weight: 720 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-            margin-bottom: 1.1rem !important;
-        }
-
-        h2 {
-            color: var(--text-main);
-            font-size: var(--font-section) !important;
-            font-weight: 680 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-            margin-top: 1.6rem !important;
-            padding-top: 1.05rem !important;
-            border-top: 1px solid var(--line-soft);
-        }
-
-        h3 {
-            color: var(--text-main);
-            font-size: var(--font-subsection) !important;
-            font-weight: 650 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-            margin-top: 1rem !important;
-            margin-bottom: 0.45rem !important;
-        }
-
-        p, li, label, div[data-testid="stMarkdownContainer"] {
-            color: var(--text-main);
-            font-size: var(--font-body) !important;
-            line-height: var(--line-body) !important;
-            letter-spacing: 0 !important;
-        }
-
-        div[data-testid="stCaptionContainer"],
-        div[data-testid="stCaptionContainer"] p,
-        small {
-            color: var(--text-muted) !important;
-            font-size: var(--font-caption) !important;
-            line-height: 1.38 !important;
-            letter-spacing: 0 !important;
-        }
-
-        [data-testid="stMetric"] {
-            height: var(--metric-card-height);
-            min-height: var(--metric-card-height);
-            box-sizing: border-box;
-            padding: 0.58rem 0.72rem;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-            background: var(--panel-bg);
-            border: 1px solid var(--line-soft);
-            border-left: 3px solid var(--accent);
-            border-radius: 8px;
-            box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
-        }
-
-        [data-testid="stMetricLabel"],
-        [data-testid="stMetricLabel"] p {
-            color: var(--text-muted) !important;
-            font-size: var(--font-small) !important;
-            font-weight: 620 !important;
-            line-height: var(--line-tight) !important;
-            margin-bottom: 0.2rem !important;
-        }
-
-        [data-testid="stMetricValue"] {
-            color: var(--text-main) !important;
-            font-size: var(--font-kpi-value) !important;
-            font-weight: 700 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-        }
-
-        [data-testid="stMetricDelta"] {
-            font-size: var(--font-small) !important;
-            line-height: 1.15 !important;
-        }
-
-        div[data-testid="stAlert"] {
-            border-radius: 8px;
-            border: 1px solid var(--line-soft);
-            box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-        }
-
-        div[data-testid="stDataFrame"],
-        div[data-testid="stTable"] {
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            overflow: hidden;
-            background: var(--panel-bg);
-        }
-
-        div[data-testid="stDataFrame"] *,
-        div[data-testid="stTable"] *,
-        [data-testid="stDataEditor"] * {
-            font-size: var(--font-control) !important;
-            line-height: 1.36 !important;
-        }
-
-        div[data-testid="stTabs"] [role="tablist"] {
-            gap: 0.2rem;
-            border-bottom: 1px solid var(--line-soft);
-        }
-
-        button[data-baseweb="tab"] {
-            border-radius: 6px 6px 0 0;
-            padding: 0.42rem 0.76rem;
-            color: var(--text-muted);
-            font-size: var(--font-control) !important;
-            font-weight: 620;
-            line-height: var(--line-tight) !important;
-        }
-
-        button[data-baseweb="tab"][aria-selected="true"] {
-            background: var(--accent-soft);
-            color: var(--accent);
-        }
-
-        div[data-testid="stFileUploader"] section,
-        div[data-testid="stExpander"] details {
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            background: var(--panel-bg);
-        }
-
-        [data-testid="stFileUploaderDropzone"] button [data-testid="stIconMaterial"],
-        [data-testid="stFileUploaderDropzone"] button [data-testid="stMarkdownContainer"],
-        [data-testid="stFileUploaderDropzoneInstructions"] {
-            display: none !important;
-        }
-
-        [data-testid="stFileUploaderDropzone"] button::after {
-            content: "파일 선택";
-            font-size: var(--font-control);
-            font-weight: 650;
-            color: var(--text-main);
-        }
-
-        [data-testid="stFileUploaderDropzone"]::after {
-            content: "CSV 또는 XLSX 파일을 업로드할 수 있습니다.";
-            color: var(--text-muted);
-            font-size: var(--font-caption);
-            line-height: 1.35;
-        }
-
-        div[data-testid="stExpander"] summary {
-            font-size: var(--font-control) !important;
-            font-weight: 650;
-            color: var(--text-main);
-            line-height: var(--line-tight) !important;
-        }
-
-        div[data-testid="stButton"] button,
-        div[data-testid="stDownloadButton"] button {
-            border-radius: 6px;
-            border: 1px solid var(--line-strong);
-            font-size: var(--font-control) !important;
-            font-weight: 650;
-            line-height: var(--line-tight) !important;
-            box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
-        }
-
-        div[data-testid="stSelectbox"] label,
-        div[data-testid="stDateInput"] label,
-        div[data-testid="stNumberInput"] label,
-        div[data-testid="stTextInput"] label,
-        div[data-testid="stFileUploader"] label {
-            font-size: var(--font-control) !important;
-            font-weight: 620 !important;
-            line-height: var(--line-tight) !important;
-        }
-
-        div[data-baseweb="select"] *,
-        div[data-baseweb="input"] *,
-        div[data-baseweb="base-input"] *,
-        div[data-testid="stDateInput"] * {
-            font-size: var(--font-control) !important;
-            line-height: 1.34 !important;
-        }
-
-        textarea,
-        input {
-            border-radius: 6px !important;
-            font-size: var(--font-control) !important;
-            line-height: 1.42 !important;
-        }
-
-        textarea[aria-label="보고 메모"] {
-            font-size: var(--font-body) !important;
-            line-height: 1.58 !important;
-        }
-        .page-header {
-            margin: 0 0 8px !important;
-            padding: 0 !important;
-        }
-
-        .page-header__eyebrow {
-            font-size: 11px !important;
-            line-height: 1.15 !important;
-            margin-bottom: 2px !important;
-        }
-
-        .page-header h1 {
-            margin: 0 0 5px !important;
-            font-size: 25px !important;
-            line-height: 1.14 !important;
-        }
-
-        .page-header__subtitle {
-            font-size: 12px !important;
-            line-height: 1.28 !important;
-            margin-top: 0 !important;
-        }
-
-        .workbench-shell,
-        .workbench-main {
-            color: #25312f;
-        }
-
-        .workbench-shell.top-status-bar,
-        .page-header-compact {
-            border: 1px solid #d8d1c6;
-            border-radius: 8px;
-            background: #fffdf8;
-            padding: 8px 12px;
-            margin: 0 0 6px;
-            box-shadow: 0 1px 2px rgba(54, 46, 36, 0.06);
-        }
-
-        .page-header-compact {
-            display: flex;
-            align-items: flex-end;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 0;
-            margin: 0;
-            border: 0;
-            box-shadow: none;
-        }
-
-        .page-header-compact__eyebrow {
-            color: #2f6f68;
-            font-size: 11px;
-            font-weight: 850;
-            line-height: 1.2;
-        }
-
-        .page-header-compact h1 {
-            margin: 2px 0 0 !important;
-            font-size: 19px !important;
-            line-height: 1.15 !important;
-            font-weight: 850 !important;
-            letter-spacing: 0 !important;
-        }
-
-        .page-header-compact p {
-            margin: 2px 0 0;
-            color: #66716e;
-            font-size: 12px !important;
-            line-height: 1.25 !important;
-        }
-
-        .workbench-fact-row {
-            display: grid;
-            grid-template-columns: repeat(5, minmax(130px, 1fr));
-            gap: 8px;
-            margin: 8px 0 10px;
-        }
-
-        .metric-card-compact {
-            min-height: 52px;
-            border: 1px solid #d8d1c6;
-            border-radius: 8px;
-            background: #faf8f3;
-            padding: 8px 10px;
-        }
-
-        .metric-card-compact span {
-            display: block;
-            color: #66716e;
-            font-size: 11px;
-            font-weight: 800;
-            line-height: 1.2;
-        }
-
-        .metric-card-compact strong {
-            display: block;
-            margin-top: 3px;
-            color: #25312f;
-            font-size: 14px;
-            font-weight: 850;
-            line-height: 1.24;
-            overflow-wrap: anywhere;
-        }
-
-        .projection-chart-card,
-        .decision-panel,
-        .report-card,
-        .excel-card,
-        .empty-state {
-            border: 1px solid #d8d1c6;
-            border-radius: 8px;
-            background: #fffdf8;
-            box-shadow: 0 1px 2px rgba(54, 46, 36, 0.06);
-        }
-
-        .projection-chart-card {
-            padding: 8px 10px 8px;
-            min-height: 0;
-        }
-
-        .projection-chart-card__head {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 4px;
-        }
-
-        .projection-chart-card__label {
-            color: #25312f;
-            font-size: 16px;
-            font-weight: 850;
-            line-height: 1.25;
-        }
-
-        .projection-chart-card__copy {
-            margin-top: 2px;
-            color: #66716e;
-            font-size: 12px;
-            line-height: 1.3;
-        }
-
-        .chart-legend-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px 12px;
-            padding: 8px 2px 0;
-            color: #66716e;
-            font-size: 12px;
-            font-weight: 750;
-        }
-
-        .chart-legend-row span {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .chart-legend-row i {
-            display: inline-block;
-            width: 18px;
-            height: 0;
-            border-top: 3px solid #2f6f68;
-        }
-
-        .chart-legend-row .legend-target {
-            border-color: #8a8f98;
-            border-top-style: dashed;
-        }
-
-        .chart-legend-row .legend-actual {
-            border-color: #0f766e;
-        }
-
-        .chart-legend-row .legend-projection {
-            border-color: #2f6f68;
-            border-top-style: dashed;
-        }
-
-        .chart-legend-row .legend-band {
-            height: 10px;
-            border: 0;
-            background: #dcebe8;
-        }
-
-        .chart-legend-row .legend-close {
-            border-color: #b48632;
-            border-top-style: dashed;
-        }
-
-        .chart-legend-row .legend-current {
-            width: 10px;
-            height: 10px;
-            border: 0;
-            border-radius: 999px;
-            background: #25312f;
-        }
-
-        .decision-panel {
-            padding: 10px 12px;
-            min-height: 0;
-        }
-
-        .decision-panel__label {
-            color: #2f6f68;
-            font-size: 11px;
-            font-weight: 900;
-            line-height: 1.2;
-            text-transform: uppercase;
-        }
-
-        .decision-panel h2 {
-            margin: 4px 0 6px !important;
-            padding: 0 !important;
-            border: 0 !important;
-            color: #25312f !important;
-            font-size: 17px !important;
-            line-height: 1.2 !important;
-            font-weight: 850 !important;
-        }
-
-        .decision-panel__row {
-            display: grid;
-            grid-template-columns: 96px 1fr;
-            gap: 7px;
-            padding: 6px 0;
-            border-top: 1px solid #e6ded2;
-        }
-
-        .decision-panel__row span {
-            color: #66716e;
-            font-size: 12px;
-            font-weight: 800;
-            line-height: 1.3;
-        }
-
-        .decision-panel__row strong {
-            color: #25312f;
-            font-size: 13px;
-            font-weight: 800;
-            line-height: 1.35;
-            overflow-wrap: anywhere;
-        }
-
-        .strategy-card-row {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(220px, 1fr));
-            gap: 10px;
-            margin: 8px 0 16px;
-        }
-
-        .strategy-section,
-        .next-action-panel,
-        .excel-readonly-panel,
-        .compact-arrival-chart {
-            border: 1px solid #d8d1c6;
-            border-radius: 8px;
-            background: #fffdf8;
-            box-shadow: 0 1px 2px rgba(54, 46, 36, 0.05);
-        }
-
-        .strategy-section {
-            padding: 8px;
-            margin: 6px 0;
-        }
-
-        .strategy-section__head {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 8px;
-        }
-
-        .strategy-section__status,
-        .next-action-panel__label,
-        .excel-readonly-panel__label {
-            color: #2f6f68;
-            font-size: 11px;
-            font-weight: 900;
-            line-height: 1.2;
-            text-transform: uppercase;
-        }
-
-        .strategy-section__head p {
-            margin: 2px 0 0;
-            color: #66716e;
-            font-size: 12px !important;
-            line-height: 1.32 !important;
-        }
-
-        .strategy-section__head span {
-            flex: 0 0 auto;
-            border: 1px solid #cfd8d5;
-            border-radius: 999px;
-            background: #eef5f3;
-            color: #193b37;
-            padding: 4px 8px;
-            font-size: 11px;
-            font-weight: 850;
-        }
-
-        .strategy-section__cards {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(200px, 1fr));
-            gap: 7px;
-        }
-
-        .strategy-card-shell {
-            min-width: 0;
-        }
-
-        .strategy-section .scenario-card {
-            min-height: 108px;
-            border-radius: 8px;
-            padding: 8px;
-        }
-
-        .strategy-section .scenario-card__topline {
-            margin-bottom: 5px;
-        }
-
-        .strategy-section .scenario-card__name {
-            font-size: 14px;
-            line-height: 1.18;
-            margin-bottom: 4px;
-        }
-
-        .strategy-section .scenario-card__description {
-            min-height: 0;
-            max-height: 30px;
-            overflow: hidden;
-            font-size: 11px;
-            line-height: 1.32;
-        }
-
-        .strategy-section .scenario-card__metrics {
-            gap: 6px;
-            margin-top: 5px;
-        }
-
-        .strategy-section .scenario-card__metric {
-            border-radius: 8px;
-            padding: 6px;
-        }
-
-        .strategy-section .scenario-card__metric-label {
-            font-size: 10px;
-            margin-bottom: 2px;
-        }
-
-        .strategy-section .scenario-card__metric-value {
-            font-size: 12px;
-            line-height: 1.2;
-        }
-
-        .strategy-card-shell__code {
-            margin-bottom: 4px;
-            color: #53615e;
-            font-size: 11px;
-            font-weight: 850;
-            line-height: 1.25;
-            overflow-wrap: anywhere;
-        }
-
-        .strategy-card-inactive {
-            opacity: 0.72;
-        }
-
-        .strategy-card-inactive .scenario-card {
-            background: #fbfaf6;
-        }
-
-        .compact-arrival-chart {
-            padding: 10px;
-            margin: 6px 0 8px;
-        }
-
-        .scenario-inline-chart-title {
-            display: flex;
-            align-items: baseline;
-            gap: 8px;
-            margin: 4px 0 0;
-            color: #25312f;
-            font-size: 12px;
-            line-height: 1.25;
-        }
-
-        .scenario-inline-chart-title strong {
-            font-size: 13px;
-            font-weight: 900;
-        }
-
-        .scenario-inline-chart-title span {
-            color: #66716e;
-            font-size: 11px;
-            font-weight: 760;
-        }
-
-        .compact-arrival-target {
-            margin-bottom: 7px;
-            color: #636967;
-            font-size: 12px;
-            font-weight: 850;
-        }
-
-        .compact-arrival-row {
-            display: grid;
-            grid-template-columns: minmax(136px, 0.28fr) minmax(160px, 1fr) 86px;
-            gap: 8px;
-            align-items: center;
-            padding: 4px 0;
-        }
-
-        .compact-arrival-row__label {
-            color: #25312f;
-            font-size: 12px;
-            font-weight: 850;
-            line-height: 1.22;
-            overflow-wrap: anywhere;
-        }
-
-        .compact-arrival-row__label span {
-            display: block;
-            color: #66716e;
-            font-size: 10px;
-            font-weight: 760;
-        }
-
-        .compact-arrival-row__track {
-            height: 14px;
-            border-radius: 999px;
-            background: #ece6dc;
-            overflow: hidden;
-        }
-
-        .compact-arrival-row__bar {
-            height: 100%;
-            border-radius: 999px;
-            background: #2f6f68;
-        }
-
-        .compact-arrival-row__bar--p {
-            background: #b48632;
-        }
-
-        .compact-arrival-row__bar--o {
-            background: #567c5d;
-        }
-
-        .compact-arrival-row__bar--n {
-            background: #51758c;
-        }
-
-        .compact-arrival-row__bar.is-selected {
-            box-shadow: inset 0 0 0 2px rgba(37, 49, 47, 0.34);
-        }
-
-        .compact-arrival-row__value {
-            color: #25312f;
-            font-size: 12px;
-            font-weight: 850;
-            text-align: right;
-        }
-
-        .next-action-panel {
-            padding: 10px 12px;
-            margin: 10px 0;
-        }
-
-        .next-action-panel h3,
-        .excel-readonly-panel h3 {
-            margin: 3px 0 6px !important;
-            padding: 0 !important;
-            border: 0 !important;
-            color: #25312f !important;
-            font-size: 15px !important;
-            font-weight: 850 !important;
-        }
-
-        .next-action-panel ul {
-            margin: 0;
-            padding-left: 18px;
-        }
-
-        .next-action-panel li {
-            margin: 2px 0;
-            color: #25312f;
-            font-size: 13px !important;
-            line-height: 1.38 !important;
-        }
-
-        .excel-readonly-panel {
-            padding: 10px 12px;
-            margin: 8px 0;
-        }
-
-        .excel-readonly-panel p {
-            margin: 0;
-            color: #66716e;
-            font-size: 12px !important;
-            line-height: 1.38 !important;
-        }
-
-        .strategy-card,
-        .strategy-card-under,
-        .strategy-card-over,
-        .strategy-card-neutral {
-            border-radius: 8px;
-        }
-
-        .strategy-card-under {
-            border-color: #d1b98a;
-            background: #f6ead4;
-        }
-
-        .strategy-card-over {
-            border-color: #9fc0a5;
-            background: #dfe9de;
-        }
-
-        .strategy-card-neutral {
-            border-color: #a6b9cb;
-            background: #dce6ed;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail {
-            max-width: 244px;
-            padding: 8px;
-            border: 1px solid #d8d1c6;
-            border-radius: 8px;
-            background: #fffdf8;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail__title {
-            margin: 0 0 8px;
-            color: #66716e;
-            font-size: 11px;
-            font-weight: 900;
-            letter-spacing: 0;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail a.nav-item,
-        section[data-testid="stSidebar"] .nav-rail a.nav-item:visited,
-        .mini-nav a.nav-item,
-        .mini-nav a.nav-item:visited {
-            display: block;
-            position: relative;
-            margin: 3px 0;
-            padding: 8px 10px 8px 12px;
-            border: 1px solid transparent;
-            border-radius: 8px;
-            background: transparent;
-            color: #25312f !important;
-            text-decoration: none !important;
-            box-shadow: none;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail a.nav-item:hover,
-        .mini-nav a.nav-item:hover {
-            border-color: #d2dfdc;
-            background: #f3f6f4;
-            color: #193b37 !important;
-            text-decoration: none !important;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail a.nav-item.active,
-        .mini-nav a.nav-item.active {
-            border-color: #a8c9c3;
-            border-left: 4px solid #2f6f68;
-            background: #dcebe8;
-            color: #193b37 !important;
-            font-weight: 850;
-            text-decoration: none !important;
-        }
-
-        section[data-testid="stSidebar"] .nav-item__label,
-        .mini-nav .nav-item__label {
-            display: block;
-            color: inherit !important;
-            font-size: 13px;
-            font-weight: 820;
-            line-height: 1.25;
-            text-decoration: none !important;
-        }
-
-        section[data-testid="stSidebar"] .nav-item__marker,
-        .mini-nav .nav-item__marker {
-            display: inline-block;
-            margin-top: 3px;
-            color: #2f6f68;
-            font-size: 10px;
-            font-weight: 900;
-            line-height: 1;
-        }
-
-        .mini-nav {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin: 6px 0 8px;
-        }
-
-        .mini-nav a.nav-item,
-        .mini-nav a.nav-item:visited {
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: center;
-            min-height: 30px;
-            margin: 0;
-            padding: 6px 10px;
-            border-radius: 999px;
-        }
-
-        .mini-nav .nav-item__label {
-            font-size: 12px;
-            line-height: 1;
-        }
-
-        .mini-nav .nav-item__marker {
-            display: none;
-        }
-
-        @media (max-width: 1180px) {
-            .workbench-fact-row,
-            .strategy-card-row,
-            .strategy-section__cards {
-                grid-template-columns: repeat(2, minmax(180px, 1fr));
-            }
-
-            .decision-panel,
-            .projection-chart-card {
-                min-height: auto;
-            }
-        }
-
-        @media (max-width: 760px) {
-            .workbench-fact-row,
-            .strategy-card-row,
-            .strategy-section__cards,
-            .compact-arrival-row,
-            .decision-panel__row {
-                grid-template-columns: 1fr;
-            }
-
-            .page-header-compact {
-                align-items: flex-start;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(get_pace_check_css(), unsafe_allow_html=True)
-    inject_global_styles(st)
-    st.markdown(
-        """
-        <style>
-        :root {
-            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
-            --font-app-title: 16px;
-            --font-page-title: 20px;
-            --font-section-title: 16px;
-            --font-card-title: 14px;
-            --font-body: 13px;
-            --font-body-large: 14px;
-            --font-caption: 12px;
-            --font-overline: 11px;
-            --font-metric-value: 17px;
-            --font-nav-title: 13px;
-            --font-nav-subtitle: 11px;
-            --font-chart-axis: 11px;
-            --font-chart-legend: 12px;
-            --line-body: 1.62;
-            --line-tight: 1.32;
-            --line-card: 1.56;
-            --app-bg: #f5f7fa;
-            --surface: #ffffff;
-            --surface-muted: #f7f9fb;
-            --surface-soft: #eef6f5;
-            --line-soft: #d8e0e7;
-            --line-strong: #bcc8d4;
-            --text-main: #202833;
-            --text-muted: #65717f;
-            --teal: #14756f;
-            --teal-soft: #e6f3f1;
-            --amber: #b7791f;
-            --slate: #536170;
-            --chart-bg: #f7f9fb;
-            --bg: var(--app-bg);
-            --ink: var(--text-main);
-            --ink-2: var(--text-muted);
-            --muted: #7d8793;
-            --line: var(--line-soft);
-            --surface-2: var(--surface-muted);
-            --radius-lg: 8px;
-            --radius-md: 8px;
-        }
-
-        *,
-        *::before,
-        *::after {
-            box-sizing: border-box;
-        }
-
-        html,
-        body,
-        .stApp,
-        .block-container,
-        .page-shell,
-        .workbench-shell,
-        .same-window-top-status,
-        .top-status-bar,
-        .nav-rail,
-        .metric-card,
-        .metric-card-compact,
-        .decision-panel,
-        .report-card,
-        .excel-card,
-        .projection-chart-card,
-        .section-header,
-        textarea,
-        input,
-        button,
-        table {
-            font-family: var(--font-sans) !important;
-        }
-
-        .stApp {
-            background: var(--app-bg) !important;
-            color: var(--text-main) !important;
-            font-size: var(--font-body) !important;
-            line-height: var(--line-body) !important;
-        }
-
-        .block-container {
-            max-width: 1440px;
-            padding-top: 2.35rem !important;
-            padding-left: clamp(1rem, 2vw, 1.75rem) !important;
-            padding-right: clamp(1rem, 2vw, 1.75rem) !important;
-            padding-bottom: 3rem !important;
-        }
-
-        .page-shell {
-            display: block;
-            padding-top: 20px;
-        }
-
-        [data-testid="stHeader"] {
-            background: rgba(245, 247, 250, 0.96) !important;
-            border-bottom: 1px solid var(--line-soft) !important;
-        }
-
-        h1,
-        .page-header h1,
-        .pace-hero-title {
-            font-family: var(--font-sans) !important;
-            font-size: var(--font-page-title) !important;
-            font-weight: 700 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-            margin: 0 0 6px !important;
-        }
-
-        h2,
-        .section-header__title {
-            font-size: var(--font-section-title) !important;
-            font-weight: 700 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-        }
-
-        h3,
-        .projection-chart-card__label,
-        .decision-panel h2,
-        .next-action-panel h3,
-        .excel-readonly-panel h3 {
-            font-size: var(--font-card-title) !important;
-            font-weight: 700 !important;
-            line-height: var(--line-tight) !important;
-            letter-spacing: 0 !important;
-        }
-
-        p,
-        li,
-        label,
-        div[data-testid="stMarkdownContainer"] {
-            font-size: var(--font-body) !important;
-            font-weight: 400 !important;
-            line-height: var(--line-body) !important;
-            letter-spacing: 0 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        div[data-testid="stCaptionContainer"],
-        div[data-testid="stCaptionContainer"] p,
-        small,
-        .section-header__subtitle,
-        .projection-chart-card__copy,
-        .page-header__subtitle {
-            color: var(--text-muted) !important;
-            font-size: var(--font-caption) !important;
-            font-weight: 400 !important;
-            line-height: 1.55 !important;
-        }
-
-        .page-header {
-            display: flow-root;
-            min-width: 0;
-            margin: 0 0 12px !important;
-            padding: 14px 16px 15px !important;
-            overflow: hidden;
-        }
-
-        .page-header-compact {
-            min-width: 0;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: hidden;
-        }
-
-        .workbench-shell.top-status-bar {
-            margin: 0 0 16px !important;
-        }
-
-        .page-header > *:first-child,
-        .page-header-compact > *:first-child,
-        .section-header > *:first-child,
-        .metric-card-compact > *:first-child,
-        .kpi-card > *:first-child,
-        .scenario-card > *:first-child,
-        .report-card > *:first-child,
-        .excel-card > *:first-child,
-        .next-action-panel > *:first-child,
-        .excel-readonly-panel > *:first-child,
-        .report-memo-card > *:first-child,
-        .history-purpose-card > *:first-child {
-            margin-top: 0 !important;
-        }
-
-        .page-header > *:last-child,
-        .page-header-compact > *:last-child,
-        .section-header > *:last-child,
-        .metric-card-compact > *:last-child,
-        .kpi-card > *:last-child,
-        .scenario-card > *:last-child,
-        .report-card > *:last-child,
-        .excel-card > *:last-child,
-        .next-action-panel > *:last-child,
-        .excel-readonly-panel > *:last-child,
-        .report-memo-card > *:last-child,
-        .history-purpose-card > *:last-child {
-            margin-bottom: 0 !important;
-        }
-
-        .page-header h1 {
-            margin: 4px 0 0 !important;
-            max-width: 100%;
-            overflow-wrap: anywhere;
-        }
-
-        .page-header__subtitle {
-            margin-top: 7px !important;
-            max-width: 100%;
-            overflow-wrap: anywhere;
-        }
-
-        .page-header__eyebrow,
-        .page-header-compact__eyebrow,
-        .projection-chart-card__label + .projection-chart-card__copy,
-        .decision-panel__label,
-        .next-action-panel__label,
-        .excel-readonly-panel__label,
-        .nav-rail__title {
-            letter-spacing: 0.02em !important;
-        }
-
-        .page-header__eyebrow,
-        .page-header-compact__eyebrow,
-        .decision-panel__label,
-        .next-action-panel__label,
-        .excel-readonly-panel__label,
-        .nav-rail__title {
-            display: block;
-            max-width: 100%;
-            color: var(--teal) !important;
-            font-size: var(--font-overline) !important;
-            font-weight: 700 !important;
-            line-height: 1.2 !important;
-            text-transform: none;
-            overflow-wrap: anywhere;
-        }
-
-        .same-window-top-status {
-            display: grid;
-            grid-template-columns: minmax(180px, 0.7fr) auto minmax(0, 1.3fr);
-            align-items: center;
-            gap: 12px;
-            min-width: 0;
-            margin: 22px 0 18px;
-            padding: 13px 16px;
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            background: var(--surface);
-            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06);
-        }
-
-        .same-window-top-status__brand {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            min-width: 0;
-            color: var(--text-main);
-            font-size: var(--font-app-title);
-            font-weight: 700;
-            line-height: 1.35;
-        }
-
-        .same-window-top-status__brand span:last-child {
-            min-width: 0;
-        }
-
-        .same-window-top-status__brand small {
-            display: block;
-            margin-top: 1px;
-            font-size: var(--font-nav-subtitle) !important;
-            font-weight: 500;
-        }
-
-        .same-window-top-status__page {
-            color: var(--text-main);
-            font-size: var(--font-card-title);
-            font-weight: 700;
-            line-height: 1.35;
-            min-width: 0;
-            white-space: normal;
-            overflow-wrap: anywhere;
-        }
-
-        .same-window-top-status__meta {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-            gap: 6px;
-            min-width: 0;
-        }
-
-        .pace-brand-mark {
-            width: 24px !important;
-            height: 24px !important;
-            border-radius: 7px !important;
-            flex: 0 0 auto;
-        }
-
-        .pace-pill {
-            min-width: 0;
-            min-height: 28px;
-            padding: 5px 9px;
-            border-radius: 999px;
-            font-size: var(--font-nav-subtitle) !important;
-            font-weight: 500 !important;
-            line-height: 1.32 !important;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 220px;
-        }
-
-        section[data-testid="stSidebar"] {
-            background: var(--surface-muted) !important;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail {
-            max-width: 100%;
-            min-width: 0;
-            padding: 4px 0 8px;
-            border: 0;
-            background: transparent;
-        }
-
-        section[data-testid="stSidebar"] .nav-rail__title {
-            margin: 0 0 8px;
-        }
-
-        section[data-testid="stSidebar"] div[data-testid="stButton"] button {
-            min-width: 0;
-            justify-content: flex-start;
-            border-radius: 8px;
-            padding: 8px 10px;
-            font-size: var(--font-nav-title) !important;
-            font-weight: 700 !important;
-            line-height: 1.42 !important;
-            white-space: normal;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-            text-align: left;
-        }
-
-        div[data-testid="stHorizontalBlock"],
-        div[data-testid="stHorizontalBlock"] > div,
-        div[data-testid="column"],
-        div[data-testid="stVerticalBlock"],
-        div[data-testid="stVerticalBlock"] > div,
-        div[data-testid="stDataFrame"],
-        div[data-testid="stTable"],
-        div[data-testid="stMetric"],
-        .metric-card,
-        .metric-card-compact,
-        .kpi-grid,
-        .kpi-card,
-        .decision-panel,
-        .report-card,
-        .excel-card,
-        .nav-item,
-        .projection-chart-card,
-        .section-header,
-        .strategy-section,
-        .strategy-section__head,
-        .strategy-section__cards,
-        .strategy-card-shell,
-        .scenario-card,
-        .scenario-card__metrics,
-        .report-memo-card,
-        .history-purpose-card {
-            min-width: 0;
-        }
-
-        .text-wrap,
-        .page-header,
-        .page-header-compact,
-        .section-header,
-        .metric-card,
-        .metric-card-compact,
-        .decision-panel,
-        .report-card,
-        .excel-card,
-        .projection-chart-card,
-        .kpi-card,
-        .scenario-card,
-        .strategy-section,
-        .compact-arrival-chart,
-        .report-memo-card,
-        .history-purpose-card {
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .page-header,
-        .section-header,
-        .metric-card-compact,
-        .kpi-card,
-        .scenario-card,
-        .report-card,
-        .excel-card,
-        .next-action-panel,
-        .excel-readonly-panel,
-        .report-memo-card,
-        .history-purpose-card {
-            overflow: hidden;
-        }
-
-        .text-truncate {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .line-clamp-2 {
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-
-        .pace-mode-card {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(260px, 0.86fr);
-            align-items: center;
-            gap: 5px 14px;
-            margin: 6px 0 12px !important;
-            padding: 12px 14px !important;
-            border: 1px solid #bdd8d4;
-            border-left: 4px solid var(--teal);
-            border-radius: 8px;
-            background: var(--surface);
-            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06);
-        }
-
-        .pace-mode-card.status-under-target {
-            border-color: #e5c5bd;
-            border-left-color: #b76351;
-            background: #fff8f6;
-        }
-
-        .pace-mode-card.status-on-target {
-            border-color: #e7d1a7;
-            border-left-color: var(--amber);
-            background: #fffaf0;
-        }
-
-        .pace-mode-card.status-over-target {
-            border-color: #bfdcc9;
-            border-left-color: #2d8b67;
-            background: #f5fbf7;
-        }
-
-        .pace-mode-card__label {
-            grid-column: 1;
-            color: var(--text-muted);
-            font-size: var(--font-overline) !important;
-            font-weight: 700 !important;
-            line-height: 1.2 !important;
-        }
-
-        .pace-mode-card__mode {
-            grid-column: 1;
-            margin-top: 1px;
-            color: var(--text-main);
-            font-size: 24px !important;
-            font-weight: 800 !important;
-            line-height: 1.15 !important;
-            overflow-wrap: anywhere;
-        }
-
-        .pace-mode-card.status-under-target .pace-mode-card__mode {
-            color: #854234;
-        }
-
-        .pace-mode-card.status-on-target .pace-mode-card__mode {
-            color: #805113;
-        }
-
-        .pace-mode-card.status-over-target .pace-mode-card__mode {
-            color: #1d6446;
-        }
-
-        .pace-mode-card__description {
-            grid-column: 1;
-            margin-top: 2px;
-            color: var(--text-muted);
-            font-size: var(--font-body) !important;
-            line-height: 1.45 !important;
-            overflow-wrap: anywhere;
-        }
-
-        .pace-mode-card__facts {
-            grid-column: 2;
-            grid-row: 1 / span 3;
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
-            margin-top: 0;
-            min-width: 0;
-        }
-
-        .pace-mode-card__fact {
-            min-width: 0;
-            padding: 9px 10px;
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.72);
-        }
-
-        .pace-mode-card__fact small {
-            display: block;
-            color: var(--text-muted) !important;
-            font-size: var(--font-overline) !important;
-            font-weight: 500 !important;
-            line-height: 1.25 !important;
-        }
-
-        .pace-mode-card__fact strong {
-            display: block;
-            margin-top: 4px;
-            color: var(--text-main);
-            font-size: var(--font-metric-value) !important;
-            font-weight: 700 !important;
-            line-height: 1.22 !important;
-            overflow-wrap: anywhere;
-        }
-
-        [data-testid="stMetric"] {
-            height: 100px !important;
-            min-height: 100px !important;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: flex-start !important;
-            border-radius: 8px !important;
-            background: var(--surface) !important;
-        }
-
-        [data-testid="stMetric"] > div {
-            min-height: 0 !important;
-        }
-
-        [data-testid="stMetricLabel"],
-        [data-testid="stMetricLabel"] p {
-            font-size: var(--font-overline) !important;
-            line-height: 1.3 !important;
-        }
-
-        [data-testid="stMetricValue"] {
-            font-size: var(--font-metric-value) !important;
-            font-weight: 700 !important;
-            line-height: 1.25 !important;
-            margin-top: 8px !important;
-            overflow-wrap: anywhere;
-        }
-
-        [data-testid="stMetricDelta"] {
-            font-size: var(--font-overline) !important;
-            line-height: 1.25 !important;
-            margin-top: 6px !important;
-        }
-
-        .kpi-grid {
-            grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
-            gap: 8px !important;
-        }
-
-        .kpi-card {
-            min-height: 0 !important;
-            padding: 10px 11px !important;
-            border-radius: 8px !important;
-            line-height: 1.5 !important;
-        }
-
-        .kpi-card__label {
-            font-size: 12px !important;
-            font-weight: 700 !important;
-            line-height: 1.3 !important;
-        }
-
-        .kpi-card__value {
-            font-size: 17px !important;
-            font-weight: 700 !important;
-            line-height: 1.25 !important;
-            margin-top: 9px !important;
-            overflow-wrap: anywhere;
-        }
-
-        .kpi-card__sub {
-            font-size: 12px !important;
-            font-weight: 400 !important;
-            line-height: 1.38 !important;
-            margin-top: 8px !important;
-            overflow-wrap: anywhere;
-        }
-
-        .metric-card-compact {
-            min-height: 0;
-            height: auto;
-            padding: 9px 10px;
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            background: var(--surface);
-        }
-
-        .metric-card-compact span {
-            color: var(--text-muted);
-            font-size: var(--font-overline);
-            font-weight: 700;
-            line-height: 1.32;
-        }
-
-        .metric-card-compact strong {
-            font-size: var(--font-metric-value);
-            font-weight: 700;
-            line-height: 1.3;
-            overflow-wrap: anywhere;
-        }
-
-        .report-card__rail {
-            margin-bottom: 16px !important;
-        }
-
-        .report-card__body {
-            display: grid;
-            gap: 0;
-            margin: 0;
-            color: var(--text-main);
-            font-family: var(--font-sans) !important;
-            white-space: normal;
-        }
-
-        .report-card__section {
-            padding: 0 0 15px;
-            margin: 0 0 15px;
-            border-bottom: 1px solid var(--line-soft);
-        }
-
-        .report-card__section:last-child {
-            padding-bottom: 0;
-            margin-bottom: 0;
-            border-bottom: 0;
-        }
-
-        .report-card__section-title {
-            margin: 0 0 9px !important;
-            color: var(--text-main);
-            font-size: 13px !important;
-            font-weight: 800 !important;
-            line-height: 1.35 !important;
-            letter-spacing: 0 !important;
-        }
-
-        .report-card__list {
-            display: grid;
-            gap: 8px;
-            margin: 0;
-            padding-left: 18px;
-        }
-
-        .report-card__list li,
-        .report-card__paragraph {
-            color: var(--text-main);
-            font-size: 13px !important;
-            line-height: 1.72 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .report-card__paragraph {
-            margin: 0;
-        }
-
-        .report-card__placeholder {
-            color: var(--text-muted);
-        }
-
-        .chart-first-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
-            gap: 14px;
-            align-items: stretch;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) {
-            display: grid !important;
-            grid-template-columns: minmax(0, 1fr) minmax(300px, 340px) !important;
-            gap: 16px !important;
-            align-items: stretch !important;
-            margin-top: 14px !important;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) > div {
-            display: flex !important;
-            width: 100% !important;
-            min-width: 0 !important;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) > div > div,
-        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) div[data-testid="stVerticalBlock"],
-        div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) div[data-testid="stMarkdownContainer"]:has(.decision-panel) {
-            width: 100% !important;
-            height: 100% !important;
-        }
-
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) {
-            display: flex !important;
-            flex-direction: column !important;
-            height: 100% !important;
-            border: 1px solid var(--line-soft) !important;
-            border-radius: 8px !important;
-            background: var(--chart-bg) !important;
-            padding: 14px 16px 12px !important;
-            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06) !important;
-        }
-
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) .projection-chart-card {
-            margin: 0 !important;
-            padding: 0 !important;
-            border: 0 !important;
-            border-radius: 0 !important;
-            background: var(--chart-bg) !important;
-            box-shadow: none !important;
-        }
-
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) .projection-chart-card__head {
-            background: var(--chart-bg) !important;
-        }
-
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) > div,
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div,
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) details,
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) [data-testid="stElementContainer"],
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div[data-testid="stMarkdownContainer"],
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div[data-testid="stVegaLiteChart"],
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) div[data-testid="stVegaLiteChart"] > div,
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) canvas,
-        div[data-testid="stVerticalBlockBorderWrapper"]:has(.projection-chart-card__head) svg {
-            background: var(--chart-bg) !important;
-        }
-
-        .projection-chart-card,
-        .decision-panel,
-        .report-card,
-        .excel-card,
-        .empty-state,
-        .strategy-section,
-        .next-action-panel,
-        .excel-readonly-panel,
-        .compact-arrival-chart,
-        .report-memo-card,
-        .history-purpose-card {
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            background: var(--surface);
-            box-shadow: 0 1px 2px rgba(28, 39, 49, 0.06);
-        }
-
-        .projection-chart-card {
-            padding: 0;
-            min-height: 0;
-            border: 0;
-            box-shadow: none;
-        }
-
-        .projection-chart-card__head {
-            gap: 12px;
-            margin-bottom: 6px;
-        }
-
-        .projection-chart-card__copy {
-            max-width: 760px;
-            margin-top: 3px;
-            line-height: 1.55 !important;
-        }
-
-        .chart-legend-row {
-            gap: 8px 14px;
-            padding: 9px 0 0;
-            margin-bottom: 10px;
-            color: var(--text-muted);
-            font-size: var(--font-chart-legend) !important;
-            font-weight: 500;
-            line-height: 1.42;
-        }
-
-        .chart-legend-row span {
-            min-width: 0;
-            white-space: normal;
-        }
-
-        .chart-legend-row i {
-            width: 18px;
-            border-top-width: 3px;
-        }
-
-        .chart-legend-row .legend-target {
-            border-color: #8a94a1;
-            border-top-style: dashed;
-        }
-
-        .chart-legend-row .legend-actual {
-            border-color: var(--teal);
-        }
-
-        .chart-legend-row .legend-projection {
-            border-color: var(--amber);
-            border-top-style: dashed;
-        }
-
-        .chart-legend-row .legend-band {
-            background: rgba(183, 121, 31, 0.16);
-        }
-
-        .chart-legend-row .legend-close {
-            border-color: var(--slate);
-            border-top-style: dashed;
-        }
-
-        .chart-legend-row .legend-current {
-            background: var(--text-main);
-        }
-
-        .projection-chart-caption {
-            clear: both;
-            display: block;
-            margin: 8px 0 0;
-            padding-top: 8px;
-            border-top: 1px solid var(--line-soft);
-            color: var(--text-muted);
-            font-size: var(--font-caption) !important;
-            line-height: 1.6 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        div[data-testid="stMarkdownContainer"]:has(.scenario-inline-chart-title) {
-            display: block !important;
-            margin: 10px 0 12px !important;
-            position: relative;
-            z-index: 1;
-        }
-
-        .scenario-inline-chart-title {
-            display: grid !important;
-            grid-template-columns: auto minmax(0, 1fr);
-            align-items: end;
-            gap: 4px 10px;
-            width: 100%;
-            min-height: 28px;
-            margin: 0 !important;
-            padding: 0 0 4px;
-            color: var(--text-main);
-            line-height: 1.35 !important;
-            overflow: visible;
-        }
-
-        .scenario-inline-chart-title strong,
-        .scenario-inline-chart-title span {
-            display: block;
-            min-width: 0;
-            line-height: 1.35 !important;
-            overflow-wrap: anywhere;
-        }
-
-        .scenario-inline-chart-title strong {
-            font-size: var(--font-body) !important;
-            font-weight: 800 !important;
-        }
-
-        .scenario-inline-chart-title span {
-            color: var(--text-muted);
-            font-size: var(--font-overline) !important;
-            font-weight: 500 !important;
-        }
-
-        div[data-testid="stAlert"] {
-            clear: both;
-            position: relative;
-            z-index: 0;
-        }
-
-        .decision-panel {
-            display: flex;
-            flex-direction: column;
-            width: 100%;
-            height: 100%;
-            min-height: 100%;
-            padding: 14px;
-        }
-
-        .decision-panel__row {
-            grid-template-columns: 96px minmax(0, 1fr);
-            align-items: center;
-            gap: 12px;
-            width: 100%;
-            min-height: 34px;
-            padding: 7px 0;
-        }
-
-        .decision-panel__row span {
-            min-width: 0;
-            font-size: var(--font-caption) !important;
-            font-weight: 500 !important;
-            line-height: 1.38 !important;
-        }
-
-        .decision-panel__row strong {
-            font-size: var(--font-body) !important;
-            font-weight: 600 !important;
-            line-height: 1.38 !important;
-            max-width: 100%;
-            overflow-wrap: anywhere;
-        }
-
-        .decision-panel__row:last-child {
-            align-items: start;
-            padding-bottom: 0;
-        }
-
-        .workbench-fact-row {
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 10px;
-        }
-
-        .strategy-section .scenario-card__description {
-            max-height: none;
-        }
-
-        .strategy-section {
-            padding: 12px;
-            margin: 10px 0 14px;
-        }
-
-        .strategy-section.is-active-management {
-            border-top: 3px solid rgba(20, 117, 111, 0.55);
-            background: #fbfefe;
-        }
-
-        .strategy-section__head {
-            gap: 14px;
-            margin-bottom: 10px;
-        }
-
-        .strategy-section__head p {
-            line-height: 1.55 !important;
-        }
-
-        .strategy-section__head span {
-            display: inline-flex;
-            align-items: center;
-            min-width: 0;
-            border: 0;
-            background: transparent;
-            color: #0f665e;
-            padding: 0;
-            font-size: var(--font-overline) !important;
-            font-weight: 700 !important;
-            line-height: 1.3 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .strategy-card-shell__badge {
-            display: inline-flex;
-            align-items: center;
-            min-width: 0;
-            border: 1px solid var(--line-soft);
-            border-radius: 999px;
-            background: var(--surface-muted);
-            color: var(--text-muted);
-            padding: 3px 7px;
-            font-size: var(--font-overline) !important;
-            font-weight: 700 !important;
-            line-height: 1.3 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .strategy-card-shell__head {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 8px;
-            min-width: 0;
-            margin-bottom: 5px;
-        }
-
-        .strategy-card-shell__badge.is-reference {
-            border-color: var(--line-soft);
-            background: var(--surface-muted);
-            color: var(--text-muted);
-        }
-
-        .strategy-card-shell__badge.is-recommended-badge {
-            border-color: #bdd8d4;
-            background: #e9f5f2;
-            color: #0f665e;
-        }
-
-        .strategy-card-active {
-            border-left: 0;
-            border-radius: 0;
-            padding-left: 0;
-        }
-
-        .strategy-card-active .scenario-card {
-            border-color: var(--line-soft) !important;
-            box-shadow: none !important;
-        }
-
-        .strategy-card-active.is-recommended .scenario-card {
-            border-left: 1px solid rgba(20, 117, 111, 0.2) !important;
-            background: #f7fcfa;
-            box-shadow: inset 0 0 0 1px rgba(20, 117, 111, 0.16) !important;
-        }
-
-        .strategy-card-shell__code {
-            line-height: 1.35 !important;
-            overflow-wrap: anywhere;
-        }
-
-        .strategy-section .scenario-card {
-            min-height: 0;
-        }
-
-        .strategy-section .scenario-card.is-emphasis {
-            box-shadow: none !important;
-        }
-
-        .strategy-card-active.is-recommended .scenario-card.is-emphasis {
-            box-shadow: inset 0 0 0 1px rgba(20, 117, 111, 0.16) !important;
-        }
-
-        .strategy-section .status-badge {
-            border-color: transparent;
-            background: transparent;
-            color: #0f665e;
-            padding: 0;
-            gap: 5px;
-            font-size: 11px !important;
-            box-shadow: none;
-        }
-
-        .strategy-section .status-badge::before {
-            width: 6px;
-            height: 6px;
-            opacity: 0.72;
-        }
-
-        .strategy-section .scenario-card__name {
-            font-size: 14px !important;
-            line-height: 1.35 !important;
-        }
-
-        .strategy-section .scenario-card__description {
-            font-size: 12px !important;
-            line-height: 1.5 !important;
-        }
-
-        .strategy-section .scenario-card__metric-label {
-            font-size: 11px !important;
-            line-height: 1.32 !important;
-        }
-
-        .strategy-section .scenario-card__metric-value {
-            font-size: 12px !important;
-            line-height: 1.35 !important;
-        }
-
-        .report-ia-note,
-        .history-purpose-card {
-            margin: 8px 0 12px;
-            padding: 12px 14px;
-            color: var(--text-main);
-            font-size: var(--font-body) !important;
-            line-height: var(--line-card) !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .report-meta-row,
-        .history-question-grid,
-        .history-next-actions {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-            margin: 8px 0 12px;
-        }
-
-        .report-meta-row span,
-        .history-question-grid span,
-        .history-next-actions span {
-            display: block;
-            min-width: 0;
-            padding: 9px 10px;
-            border: 1px solid var(--line-soft);
-            border-radius: 8px;
-            background: var(--surface-muted);
-            color: var(--text-main);
-            font-size: var(--font-caption) !important;
-            line-height: 1.55 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .report-memo-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
-            margin: 8px 0 12px;
-        }
-
-        .report-memo-card {
-            padding: 12px;
-            min-height: 0;
-        }
-
-        .report-memo-card strong {
-            display: block;
-            margin-bottom: 5px;
-            color: var(--text-main);
-            font-size: var(--font-card-title);
-            font-weight: 700;
-            line-height: var(--line-tight);
-        }
-
-        .report-memo-card span {
-            display: block;
-            color: var(--text-muted);
-            font-size: var(--font-body);
-            line-height: var(--line-card);
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        textarea[aria-label="복사용 보고문"],
-        textarea[aria-label="보고 메모"] {
-            min-height: 320px;
-            font-family: var(--font-sans) !important;
-            font-size: var(--font-body-large) !important;
-            line-height: 1.6 !important;
-            word-break: keep-all;
-            overflow-wrap: anywhere;
-        }
-
-        .history-purpose-card h3 {
-            margin: 0 0 6px !important;
-            padding: 0 !important;
-            border: 0 !important;
-        }
-
-        div[data-testid="stDataFrame"],
-        div[data-testid="stTable"] {
-            min-width: 0;
-            overflow: auto;
-        }
-
-        div[data-testid="stDataFrame"] *,
-        div[data-testid="stTable"] *,
-        [data-testid="stDataEditor"] * {
-            font-family: var(--font-sans) !important;
-            font-size: var(--font-caption) !important;
-            line-height: 1.5 !important;
-        }
-
-        @media (max-width: 1180px) {
-            .chart-first-grid,
-            div[data-testid="stHorizontalBlock"]:has(.projection-chart-card__head) {
-                grid-template-columns: 1fr !important;
-            }
-
-            .decision-panel {
-                width: 100%;
-            }
-
-            .workbench-fact-row,
-            .report-meta-row,
-            .history-question-grid,
-            .history-next-actions {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-        }
-
-        @media (max-width: 900px) {
-            section[data-testid="stSidebar"] {
-                width: 100% !important;
-            }
-
-            .block-container {
-                padding-top: 2rem !important;
-            }
-
-            .same-window-top-status {
-                grid-template-columns: 1fr;
-                align-items: start;
-                margin-top: 18px;
-            }
-
-            .same-window-top-status__meta {
-                justify-content: flex-start;
-            }
-        }
-
-        @media (max-width: 760px) {
-            .pace-mode-card {
-                grid-template-columns: 1fr;
-                padding: 12px 14px !important;
-            }
-
-            .pace-mode-card__mode {
-                font-size: 22px !important;
-            }
-
-            .pace-mode-card__facts {
-                grid-column: 1;
-                grid-row: auto;
-                grid-template-columns: 1fr;
-                margin-top: 6px;
-            }
-
-            .workbench-fact-row,
-            .report-meta-row,
-            .report-memo-grid,
-            .history-question-grid,
-            .history-next-actions {
-                grid-template-columns: 1fr;
-            }
-
-            .scenario-inline-chart-title {
-                grid-template-columns: 1fr;
-                align-items: start;
-            }
-
-            .pace-pill {
-                max-width: 100%;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    inject_app_styles(st, pace_css=get_pace_check_css())
 
 
 def calculate_validated_results(
@@ -7724,12 +5977,6 @@ def build_auto_axis_domain(values: pd.Series) -> list[float] | None:
     return [lower, min(0.0, upper)]
 
 
-def chart_value_format(unit: str) -> str:
-    """Return an Altair number format for values already stored in display units."""
-    _ = unit
-    return ",.1f"
-
-
 def build_close_cycle_chart_data(close_cycle_df: pd.DataFrame) -> pd.DataFrame:
     """Return close-cycle values ready for Streamlit charts."""
     cumulative_source = build_close_cycle_cumulative_source(close_cycle_df)
@@ -7744,250 +5991,6 @@ def build_close_cycle_chart_data(close_cycle_df: pd.DataFrame) -> pd.DataFrame:
             "actual_cum",
             "cumulative_achievement_rate",
         ),
-    )
-
-
-def build_visual_metric_definition_df(metric_columns: tuple[str, ...]) -> pd.DataFrame:
-    """Return user-facing definitions for chart series."""
-    rows = []
-    for column in metric_columns:
-        definition = VISUAL_METRIC_DEFINITIONS.get(column, {})
-        rows.append(
-            {
-                "범례": definition.get("label", column),
-                "단위": definition.get("unit", ""),
-                "수치 의미": definition.get("definition", "정의가 등록되지 않은 수치입니다."),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def build_visual_reading_guide(guide_key: str) -> dict[str, object]:
-    """Return the reading logic for a visual block."""
-    guide = VISUAL_READING_GUIDES.get(guide_key, {})
-    return {
-        "title": guide.get("title", ""),
-        "steps": tuple(guide.get("steps", ())),
-        "decision": guide.get("decision", ""),
-    }
-
-
-def build_visual_headline(
-    selected_row: pd.Series,
-    validation_result: dict[str, Any],
-    next_close_result: dict[str, Any],
-) -> str:
-    """Return the first sentence users should read before the charts."""
-    _ = validation_result
-    target_status = str(selected_row.get("target_status", "UNKNOWN_TARGET_STATUS"))
-    target_variance = _as_float(selected_row.get("target_variance"))
-    surplus = _as_float(selected_row.get("surplus_to_target"))
-    next_close_sentence = _visual_next_close_sentence(next_close_result)
-
-    if target_status == "UNDER_TARGET" or (
-        math.isfinite(target_variance) and target_variance < 0
-    ):
-        shortage = abs(target_variance) if math.isfinite(target_variance) else selected_row.get("gap_to_target")
-        return (
-            f"결론: 목표선보다 {format_amount(shortage)} 부족할 가능성이 큽니다. "
-            "먼저 전략 반영 후 예상이 공식 월 목표선까지 회복되는지 보고, "
-            f"그다음 잔여 일자별 추가 배분이 감당 가능한지 확인하세요. {next_close_sentence}"
-        )
-
-    if target_status == "OVER_TARGET" or (
-        math.isfinite(target_variance) and target_variance > 0
-    ):
-        surplus_amount = surplus if math.isfinite(surplus) and surplus > 0 else target_variance
-        return (
-            f"결론: 목표선보다 {format_amount(surplus_amount)} 여유가 예상됩니다. "
-            "초과분을 안전버퍼로 남길지, Stretch 목표로 전환할지 차트에서 확인하세요. "
-            f"{next_close_sentence}"
-        )
-
-    return (
-        "결론: 목표선 근처의 유지/모니터링 구간입니다. "
-        "시각화에서는 예측모델별 흔들림과 다음 마감 누적선을 함께 확인하세요. "
-        f"{next_close_sentence}"
-    )
-
-
-def build_visual_decision_summary(
-    selected_row: pd.Series,
-    validation_result: dict[str, Any],
-    next_close_result: dict[str, Any],
-) -> pd.DataFrame:
-    """Return chart interpretation rows in a fixed reading order."""
-    target_status = selected_row.get("target_status", "UNKNOWN_TARGET_STATUS")
-    risk_level = selected_row.get("risk_level", "N/A")
-    operation_mode = _operation_mode_label(target_status)
-    monthly_target = validation_result.get("monthly_target")
-    forecast_after = selected_row.get("forecast_after_provision")
-    target_variance = selected_row.get("target_variance")
-    next_close_date = next_close_result.get("next_close_date")
-    next_close_required = next_close_result.get("required_to_recover_next_close_cum")
-
-    return pd.DataFrame(
-        [
-            {
-                "확인 순서": "1",
-                "볼 것": "목표 판정",
-                "현재 값": (
-                    f"{_localize_display_value(target_status)} / "
-                    f"위험 {_localize_display_value(risk_level)}"
-                ),
-                "해석": _visual_status_sentence(target_status, operation_mode),
-            },
-            {
-                "확인 순서": "2",
-                "볼 것": "목표선 대비 예상 실적",
-                "현재 값": (
-                    f"{format_amount(forecast_after)} / "
-                    f"목표 {format_amount(monthly_target)}"
-                ),
-                "해석": "막대가 목표선보다 낮으면 잔여 목표 보정이 필요하고, 높으면 초과분 관리가 핵심입니다.",
-            },
-            {
-                "확인 순서": "3",
-                "볼 것": "목표 대비 차이",
-                "현재 값": _format_signed_amount(target_variance),
-                "해석": _visual_variance_sentence(target_variance),
-            },
-            {
-                "확인 순서": "4",
-                "볼 것": "다음 마감선",
-                "현재 값": (
-                    f"{_format_date(next_close_date)} / "
-                    f"{format_amount(next_close_required)}"
-                ),
-                "해석": _visual_next_close_sentence(next_close_result),
-            },
-        ]
-    )
-
-
-def _visual_status_sentence(target_status: object, operation_mode: object) -> str:
-    status = str(target_status)
-    mode = str(operation_mode)
-    if status == "UNDER_TARGET":
-        return f"{mode} 상태입니다. 시나리오별 예상 탭에서 어떤 F/P 조합이 부족분을 줄이는지 보세요."
-    if status == "OVER_TARGET":
-        return f"{mode} 상태입니다. 초과분을 버퍼로 둘지, 상향 목표로 전환할지 전략 수준 탭에서 보세요."
-    if status == "ON_TARGET":
-        return f"{mode} 상태입니다. 목표선은 맞지만 마감차수 흐름이 흔들리는지 함께 확인하세요."
-    return "목표 판정에 필요한 값이 부족합니다. 입력값 점검 결과를 먼저 확인하세요."
-
-
-def _visual_variance_sentence(value: object) -> str:
-    number = _as_float(value)
-    if not math.isfinite(number):
-        return "목표 대비 차이를 계산할 수 없습니다. 선택 시나리오 상세 값을 확인하세요."
-    if number < 0:
-        return f"월말 기준 {format_amount(abs(number))}를 더 채워야 목표선에 도달합니다."
-    if number > 0:
-        return f"월말 기준 {format_amount(number)}가 목표선 위에 있어 버퍼 또는 Stretch 후보입니다."
-    return "월말 예상이 공식 월 목표와 거의 같습니다. 남은 기간의 변동 리스크를 봅니다."
-
-
-def _visual_next_close_sentence(next_close_result: dict[str, Any]) -> str:
-    next_close_date = next_close_result.get("next_close_date")
-    required = _as_float(next_close_result.get("required_to_recover_next_close_cum"))
-    if _is_missing(next_close_date) or not math.isfinite(required):
-        return "다음 마감 기준선은 계산 가능한 데이터가 있을 때 표시됩니다."
-    if required <= 0:
-        return f"{_format_date(next_close_date)}까지 다음 마감 기준선에 대한 추가 회복 부담은 없습니다."
-    return f"{_format_date(next_close_date)}까지 누적 기준으로 최소 {format_amount(required)}을 더 확보해야 합니다."
-
-
-def _format_signed_amount(value: object) -> str:
-    number = _as_float(value)
-    if not math.isfinite(number):
-        return "계산 불가"
-    sign = "+" if number > 0 else ""
-    return f"{sign}{number:.1f}억 원"
-
-
-def build_forecast_definition_df() -> pd.DataFrame:
-    """Return display definitions for F1/F2/F3 forecast models."""
-    return pd.DataFrame(
-        [
-            {
-                "model": model_id,
-                "name": definition["name"],
-                "description": definition["description"],
-                "formula": definition["formula"],
-            }
-            for model_id, definition in FORECAST_MODEL_DEFINITIONS.items()
-        ]
-    )
-
-
-def build_provision_definition_df() -> pd.DataFrame:
-    """Return display definitions for P1/P2/P3 provision strategies."""
-    return pd.DataFrame(
-        [
-            {
-                "strategy": strategy_id,
-                "name": definition["name"],
-                "description": definition["description"],
-            }
-            for strategy_id, definition in PROVISION_STRATEGY_DEFINITIONS.items()
-        ]
-    )
-
-
-def build_overachievement_definition_df() -> pd.DataFrame:
-    """Return display definitions for O1/O2/O3 overachievement strategies."""
-    return pd.DataFrame(
-        [
-            {
-                "strategy": strategy_id,
-                "name": definition["name"],
-                "description": definition["description"],
-            }
-            for strategy_id, definition in OVERACHIEVEMENT_STRATEGY_DEFINITIONS.items()
-        ]
-    )
-
-
-def build_neutral_definition_df() -> pd.DataFrame:
-    """Return display definitions for N1/N2/N3 neutral strategies."""
-    return pd.DataFrame(
-        [
-            {
-                "strategy": strategy_id,
-                "name": definition["name"],
-                "description": definition["description"],
-            }
-            for strategy_id, definition in NEUTRAL_STRATEGY_DEFINITIONS.items()
-        ]
-    )
-
-
-def build_report_glossary_df() -> pd.DataFrame:
-    """Return the fixed glossary used by the generated report."""
-    rows: list[dict[str, str]] = []
-    for group, definitions in REPORT_GLOSSARY_GROUPS:
-        for code, definition in definitions.items():
-            rows.append(
-                {
-                    "구분": group,
-                    "코드": str(code),
-                    "정의": definition,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def build_risk_definition_df() -> pd.DataFrame:
-    """Return display definitions for scenario risk levels."""
-    return pd.DataFrame(
-        [
-            {
-                "risk_level": risk_level,
-                "definition": definition,
-            }
-            for risk_level, definition in RISK_LEVEL_DEFINITIONS.items()
-        ]
     )
 
 
@@ -8261,17 +6264,48 @@ def list_latest_excel_outputs(output_dir: Path | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def _latest_existing_report_path(latest_files: pd.DataFrame) -> Path | None:
+def _latest_existing_report_path(
+    latest_files: pd.DataFrame,
+    output_dir: Path | None = None,
+) -> Path | None:
     if latest_files.empty or "파일명" not in latest_files.columns:
         return None
     candidates = latest_files.loc[latest_files["파일명"].astype(str).str.startswith("daily_report_")]
     if candidates.empty:
         return None
-    paths = [OUTPUT_DIR / "latest" / str(name) for name in candidates["파일명"].tolist()]
+    latest_output_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR / "latest"
+    paths = [latest_output_dir / str(name) for name in candidates["파일명"].tolist()]
     existing = [path for path in paths if path.exists() and path.is_file()]
     if not existing:
         return None
-    return max(existing, key=lambda path: path.stat().st_mtime)
+    return max(
+        existing,
+        key=lambda path: (path.stat().st_mtime_ns, path.name.lower()),
+    )
+
+
+def get_latest_excel_artifact_status(output_dir: Path | None = None) -> dict[str, object]:
+    """Describe the actual newest daily report without creating or modifying files."""
+    latest_output_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR / "latest"
+    latest_files = list_latest_excel_outputs(latest_output_dir)
+    latest_path = _latest_existing_report_path(latest_files, latest_output_dir)
+    if latest_path is None:
+        return {
+            "exists": False,
+            "file_name": "",
+            "modified_at": "",
+            "size_bytes": 0,
+        }
+
+    stat = latest_path.stat()
+    return {
+        "exists": True,
+        "file_name": latest_path.name,
+        "modified_at": pd.Timestamp.fromtimestamp(stat.st_mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "size_bytes": stat.st_size,
+    }
 
 
 def build_excel_report_bytes(
@@ -8398,22 +6432,6 @@ def build_backtest_insights(
 
 def _history_storage_path(schema_name: str) -> Path:
     return history_schema.get_storage_paths(repo_root=REPO_ROOT)[schema_name]
-
-
-def format_amount(value: object) -> str:
-    """Format an amount in hundred-million KRW."""
-    number = _as_float(value)
-    if not math.isfinite(number):
-        return "계산 불가"
-    return f"{number:.1f}억 원"
-
-
-def format_rate(value: object) -> str:
-    """Format a decimal ratio as a percentage."""
-    number = _as_float(value)
-    if not math.isfinite(number):
-        return "계산 불가"
-    return f"{number * 100:.1f}%"
 
 
 def safe_divide(numerator: object, denominator: object) -> float:
@@ -9756,83 +7774,6 @@ def build_kpi_rows(
     )
 
 
-def _render_body(
-    scenario_df: pd.DataFrame,
-    selected_scenario_id: str,
-    selected_row: pd.Series,
-    forecast_result: dict[str, object],
-    provision_result: dict[str, object],
-    revised_targets_df: Any,
-    close_cycle_df: pd.DataFrame,
-    next_close_result: dict[str, Any],
-    validation_result: dict[str, Any],
-    historical_context: dict[str, object],
-    metric: str,
-    as_of_date: object,
-    df: pd.DataFrame,
-    config: dict[str, Any],
-) -> None:
-    _render_scenario_check(scenario_df)
-
-    _render_visuals(
-        scenario_df,
-        selected_scenario_id,
-        selected_row,
-        _as_dataframe(revised_targets_df),
-        close_cycle_df,
-        next_close_result,
-        validation_result,
-        metric,
-        as_of_date,
-        df,
-        config,
-    )
-    _render_historical_context_panel(
-        historical_context,
-        scenario_df,
-        selected_scenario_id,
-    )
-
-    st.subheader("시나리오 매트릭스")
-    st.dataframe(build_scenario_matrix(scenario_df), use_container_width=True)
-
-    _render_selected_scenario_summary(selected_scenario_id, selected_row)
-
-    with st.expander("선택 시나리오 상세", expanded=False):
-        detail_df = selected_row.to_frame(name="value").reset_index()
-        detail_df.columns = ["item", "value"]
-        st.dataframe(_format_display_df(detail_df), use_container_width=True)
-
-    warnings = [
-        *list(forecast_result.get("warnings", [])),
-        *list(provision_result.get("warnings", [])),
-    ]
-    if warnings:
-        st.warning("선택 시나리오 확인 사항")
-        for message in dict.fromkeys(str(warning) for warning in warnings):
-            st.write(f"- {format_validation_message(message)}")
-
-    _render_target_or_strategy_table(
-        scenario_df,
-        selected_scenario_id,
-        revised_targets_df,
-    )
-
-    st.subheader("보고 메모")
-    report_text = build_daily_report_text(
-        scenario_df,
-        next_close_result,
-        selected_scenario_id=selected_scenario_id,
-    )
-    _render_report_memo_card(report_text)
-    _render_report_glossary_panel()
-    report_key = hashlib.sha1(report_text.encode("utf-8")).hexdigest()[:12]
-    st.text_area("보고 메모", value=report_text, height=320, key=f"auto_report_{report_key}")
-
-    st.subheader("입력값 점검 결과")
-    _render_validation(validation_result)
-
-
 def _render_report_glossary_panel() -> None:
     glossary_df = build_report_glossary_df()
     with st.expander("보고 메모 고정 용어 정의", expanded=False):
@@ -9995,134 +7936,6 @@ def _render_forecast_strategy_chart_tabs(
             _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
             st.markdown("**누적 달성률**")
             _render_rate_ratio_line_chart(close_cycle_chart_data, close_cycle_cumulative_rate_columns)
-
-
-def _render_visuals(
-    scenario_df: pd.DataFrame,
-    selected_scenario_id: str,
-    selected_row: pd.Series,
-    revised_targets_df: pd.DataFrame,
-    close_cycle_df: pd.DataFrame,
-    next_close_result: dict[str, Any],
-    validation_result: dict[str, Any],
-    metric: str,
-    as_of_date: object,
-    df: pd.DataFrame,
-    config: dict[str, Any],
-    audit_readonly: bool = False,
-) -> None:
-    st.subheader("시각화")
-    st.caption("각 탭은 결론 확인 → 기준선 확인 → 차이 확인 → 실행 판단 순서로 읽습니다.")
-    _render_visual_decision_panel(
-        selected_scenario_id,
-        selected_row,
-        validation_result,
-        next_close_result,
-    )
-    scenario_tab, target_tab, close_cycle_tab, history_tab = st.tabs(
-        ["시나리오별 예상", "잔여 목표/전략 수준", "마감차수 흐름", HISTORY_TAB_LABEL]
-    )
-
-    with scenario_tab:
-        scenario_chart_data = build_scenario_chart_data(scenario_df)
-        if scenario_chart_data.empty:
-            st.info("시나리오 차트 데이터 없음")
-        else:
-            _render_visual_metric_definitions(
-                ("daily_forecast_cum", "daily_target_cum", "daily_achievement_rate")
-            )
-            _render_chart_reading_guide("scenario_daily_progress")
-            _render_forecast_model_scenario_tabs(
-                df,
-                scenario_df,
-                as_of_date,
-                metric,
-                config,
-                selected_scenario_id,
-            )
-
-            with st.expander("시나리오 숫자표", expanded=False):
-                value_matrix = build_scenario_value_matrix(scenario_df)
-                st.dataframe(value_matrix.map(format_amount), use_container_width=True)
-
-    with target_tab:
-        st.caption(f"선택 시나리오: {selected_scenario_id}")
-        target_chart_data = build_remaining_target_chart_data(revised_targets_df)
-        if target_chart_data.empty:
-            _render_strategy_level_visuals(scenario_df, selected_scenario_id)
-        else:
-            _render_visual_metric_definitions(
-                ("original_target", "uplift", "revised_target", "cap_target")
-            )
-            _render_chart_reading_guide("target_stack")
-            _render_remaining_target_stack_chart(revised_targets_df)
-
-    with close_cycle_tab:
-        close_cycle_bar_columns = ("target_sum", "actual_sum")
-        close_cycle_cumulative_amount_columns = ("target_cum", "actual_cum")
-        close_cycle_rate_columns = ("achievement_rate",)
-        close_cycle_cumulative_rate_columns = ("cumulative_achievement_rate",)
-        _render_visual_metric_definitions(
-            (
-                *close_cycle_bar_columns,
-                *close_cycle_cumulative_amount_columns,
-                *close_cycle_rate_columns,
-                *close_cycle_cumulative_rate_columns,
-            )
-        )
-        close_cycle_chart_data = build_close_cycle_chart_data(close_cycle_df)
-        if close_cycle_chart_data.empty:
-            st.info("마감 사이클 차트 데이터 없음")
-        else:
-            _render_chart_reading_guide("close_cycle_amount")
-            _render_grouped_bar_chart(close_cycle_chart_data, close_cycle_bar_columns)
-            st.markdown("**CloseCycle 누적 목표선/누적 실적**")
-            st.caption("입력표에 있는 마감차수 row만 사용해 누적 목표선과 누적 실적을 함께 표시합니다.")
-            _render_line_chart(close_cycle_chart_data, close_cycle_cumulative_amount_columns)
-            _render_chart_reading_guide("close_cycle_rate")
-            _render_line_chart(close_cycle_chart_data, close_cycle_rate_columns)
-            st.markdown("**누적 달성률**")
-            _render_rate_ratio_line_chart(close_cycle_chart_data, close_cycle_cumulative_rate_columns)
-
-    with history_tab:
-        _render_forecast_history_backtest_tab(
-            scenario_df,
-            metric,
-            as_of_date,
-            audit_readonly=audit_readonly,
-        )
-
-
-def _render_visual_decision_panel(
-    selected_scenario_id: str,
-    selected_row: pd.Series,
-    validation_result: dict[str, Any],
-    next_close_result: dict[str, Any],
-) -> None:
-    st.markdown("**결론 먼저 보기**")
-    st.info(build_visual_headline(selected_row, validation_result, next_close_result))
-
-    cols = st.columns(4)
-    cols[0].metric("선택 시나리오", selected_scenario_id)
-    cols[1].metric(
-        "전략 반영 후 예상",
-        format_amount(selected_row.get("forecast_after_provision")),
-        delta=_format_signed_amount(selected_row.get("target_variance")),
-        help="delta는 공식 월 목표 대비 차이입니다.",
-    )
-    cols[2].metric("목표 상태", _localize_display_value(selected_row.get("target_status")))
-    cols[3].metric("위험등급", _localize_display_value(selected_row.get("risk_level", "N/A")))
-
-    with st.expander("차트 해석 순서", expanded=True):
-        st.dataframe(
-            build_visual_decision_summary(
-                selected_row,
-                validation_result,
-                next_close_result,
-            ),
-            hide_index=True,
-            use_container_width=True,
-        )
 
 
 def _render_forecast_history_backtest_tab(
@@ -10708,34 +8521,6 @@ def _render_historical_forecast_comparison_chart(comparison_df: pd.DataFrame) ->
     st.altair_chart(chart, use_container_width=True)
 
 
-def _format_historical_forecast_comparison_df(comparison_df: pd.DataFrame) -> pd.DataFrame:
-    result = comparison_df.copy()
-    columns = [
-        "comparison_group",
-        "basis",
-        "forecast_amount",
-        "forecast_rate",
-        "diff_vs_target",
-        "diff_vs_historical_median",
-    ]
-    result = result.loc[:, [column for column in columns if column in result.columns]]
-    for column in ("forecast_amount", "diff_vs_target", "diff_vs_historical_median"):
-        if column in result.columns:
-            result[column] = result[column].map(format_amount)
-    if "forecast_rate" in result.columns:
-        result["forecast_rate"] = result["forecast_rate"].map(format_rate)
-    return result.rename(
-        columns={
-            "comparison_group": "구분",
-            "basis": "비교 기준",
-            "forecast_amount": "월말 예상 실적",
-            "forecast_rate": "월 목표 대비",
-            "diff_vs_target": "목표 대비",
-            "diff_vs_historical_median": "과거 중앙값 대비",
-        }
-    )
-
-
 def _render_historical_progress_chart(chart_data: pd.DataFrame) -> None:
     if chart_data.empty:
         st.info("과거 누적 흐름 차트 데이터 없음")
@@ -10776,79 +8561,6 @@ def _render_historical_progress_chart(chart_data: pd.DataFrame) -> None:
         .configure_legend(labelFontSize=11, titleFontSize=12)
     )
     st.altair_chart(chart, use_container_width=True)
-
-
-def _format_historical_stage_df(stage_df: pd.DataFrame) -> pd.DataFrame:
-    result = stage_df.copy()
-    columns = [
-        "month",
-        "matched_business_day_no",
-        "as_of_target_cum",
-        "as_of_actual_cum",
-        "as_of_achievement_rate",
-        "monthly_target",
-        "final_actual_cum",
-        "final_achievement_rate",
-        "remaining_actual_growth",
-    ]
-    result = result.loc[:, [column for column in columns if column in result.columns]]
-    for column in (
-        "as_of_target_cum",
-        "as_of_actual_cum",
-        "monthly_target",
-        "final_actual_cum",
-        "remaining_actual_growth",
-    ):
-        if column in result.columns:
-            result[column] = result[column].map(format_amount)
-    for column in ("as_of_achievement_rate", "final_achievement_rate"):
-        if column in result.columns:
-            result[column] = result[column].map(format_rate)
-    return result.rename(
-        columns={
-            "month": "월",
-            "matched_business_day_no": "비교 영업일차",
-            "as_of_target_cum": "당시 누적 목표",
-            "as_of_actual_cum": "당시 누적 실적",
-            "as_of_achievement_rate": "당시 누적 달성률",
-            "monthly_target": "월 목표",
-            "final_actual_cum": "최종 누적 실적",
-            "final_achievement_rate": "최종 달성률",
-            "remaining_actual_growth": "비교일 이후 증가 실적",
-        }
-    )
-
-
-def _format_historical_monthly_summary_df(monthly_summary: pd.DataFrame) -> pd.DataFrame:
-    result = monthly_summary.copy()
-    columns = [
-        "month",
-        "row_count",
-        "completed_actual_days",
-        "final_business_day_no",
-        "monthly_target",
-        "final_actual_cum",
-        "final_achievement_rate",
-        "close_day_count",
-    ]
-    result = result.loc[:, [column for column in columns if column in result.columns]]
-    for column in ("monthly_target", "final_actual_cum"):
-        if column in result.columns:
-            result[column] = result[column].map(format_amount)
-    if "final_achievement_rate" in result.columns:
-        result["final_achievement_rate"] = result["final_achievement_rate"].map(format_rate)
-    return result.rename(
-        columns={
-            "month": "월",
-            "row_count": "행 수",
-            "completed_actual_days": "실적 입력일 수",
-            "final_business_day_no": "최종 영업일차",
-            "monthly_target": "월 목표",
-            "final_actual_cum": "최종 누적 실적",
-            "final_achievement_rate": "최종 달성률",
-            "close_day_count": "마감일 수",
-        }
-    )
 
 
 def _render_strategy_level_visuals(
@@ -11113,33 +8825,6 @@ def _render_remaining_operation_direction_chart(source: pd.DataFrame) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
-def _format_remaining_operation_direction_df(source: pd.DataFrame) -> pd.DataFrame:
-    result = source.copy()
-    result = result.loc[:, list(REMAINING_OPERATION_DIRECTION_COLUMNS)]
-    result["date"] = result["date"].map(_format_date)
-    for column in ("original_target", "uplift", "revised_target", "expected_daily"):
-        result[column] = result[column].map(format_amount)
-    result["expected_rate"] = result["expected_rate"].map(format_rate)
-    return result.rename(
-        columns={
-            "date": "날짜",
-            "date_label": "날짜 라벨",
-            "scenario_id": "시나리오",
-            "strategy_type": "전략 구분",
-            "operation_mode": "운영 모드",
-            "day_type": "일자 구분",
-            "close_type": "마감 유형",
-            "original_target": "기존 일 목표",
-            "uplift": "업리프트",
-            "revised_target": "관리 목표",
-            "expected_daily": "예상 일실적",
-            "expected_rate": "예상 달성률",
-            "direction": "운영 방향",
-            "direction_detail": "방향 해석",
-        }
-    )
-
-
 def _render_scenario_daily_forecast_chart(
     source: pd.DataFrame,
     scenario_df: pd.DataFrame,
@@ -11357,37 +9042,6 @@ def _render_selected_scenario_daily_detail_table(
             hide_index=True,
             use_container_width=True,
         )
-
-
-def _format_daily_forecast_detail_df(detail: pd.DataFrame) -> pd.DataFrame:
-    result = detail.copy()
-    result["date"] = result["date"].map(_format_date)
-    result["daily_expected"] = result["daily_expected"].map(_format_optional_amount)
-    result["forecast_cum"] = result["forecast_cum"].map(format_amount)
-    result["target_cum"] = result["target_cum"].map(format_amount)
-    result["achievement_rate"] = result["achievement_rate"].map(format_rate)
-    result["target_achievement_rate"] = result["target_achievement_rate"].map(format_rate)
-    return result.rename(
-        columns={
-            "date": "날짜",
-            "scenario_id": "시나리오",
-            "series_type": "구분",
-            "day_type": "일자 구분",
-            "close_type": "마감 유형",
-            "daily_expected": "당일 추정",
-            "forecast_cum": "누적 실적/예상",
-            "target_cum": "누적 목표선",
-            "achievement_rate": "월 목표 달성률",
-            "target_achievement_rate": "계획선 달성률",
-        }
-    )
-
-
-def _format_optional_amount(value: object) -> str:
-    number = _as_float(value)
-    if not math.isfinite(number):
-        return "-"
-    return format_amount(number)
 
 
 def _daily_forecast_tooltips(
@@ -12153,81 +9807,28 @@ def _format_chart_index(value: object) -> str:
     return str(value)
 
 
-def _format_display_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    result = df.copy()
-    if {"item", "value"}.issubset(result.columns):
-        original_items = result["item"].astype(str)
-        result["value"] = [
-            _format_named_value(item, value)
-            for item, value in zip(result["item"], result["value"])
-        ]
-        result["value"] = result["value"].map(_localize_display_value)
-        result["item"] = original_items.map(_display_column_label)
-        return result
-
-    for column in result.columns:
-        if column in TECHNICAL_CODE_COLUMNS:
-            result[column] = result[column].map(lambda value: "" if _is_missing(value) else str(value))
-        elif column in AMOUNT_COLUMNS:
-            result[column] = result[column].map(format_amount)
-        elif column in RATE_COLUMNS:
-            result[column] = result[column].map(format_rate)
-        elif "date" in str(column).lower():
-            result[column] = result[column].map(_format_date)
-        else:
-            result[column] = result[column].map(_localize_display_value)
-    return result.rename(columns={column: _display_column_label(column) for column in result.columns})
-
-
-def _format_named_value(name: object, value: object) -> object:
-    column_name = str(name)
-    if column_name in AMOUNT_COLUMNS:
-        return format_amount(value)
-    if column_name in RATE_COLUMNS:
-        return format_rate(value)
-    if "date" in column_name.lower():
-        return _format_date(value)
-    return value
-
-
-def _display_column_label(column: object) -> str:
-    text = str(column)
-    return DISPLAY_COLUMN_LABELS.get(text, get_metric_label(text))
-
-
-def _localize_display_value(value: object) -> object:
-    if _is_missing(value):
-        return value
-    if isinstance(value, bool):
-        return "예" if value else "아니오"
-    if isinstance(value, (list, tuple, set)):
-        localized = [format_validation_message(item) for item in value]
-        return ", ".join(str(item) for item in localized if str(item))
-    text = str(value)
-    if text in {"UNDER_TARGET", "ON_TARGET", "OVER_TARGET", "UNKNOWN_TARGET_STATUS"}:
-        return get_status_label(text)
-    strategy_label = get_strategy_label(text)
-    if strategy_label != text:
-        return strategy_label
-    return DISPLAY_VALUE_LABELS.get(text, value)
-
-
-def _operation_mode_label(target_status: object) -> object:
-    if _is_missing(target_status):
-        return "계산 불가"
-    return get_operation_mode(target_status)
-
-
-def _format_date(value: object) -> str:
-    if _is_missing(value):
-        return "계산 불가"
-    try:
-        return str(pd.Timestamp(value).date())
-    except Exception:  # noqa: BLE001 - display only.
-        return str(value)
+_format_display_df = partial(
+    format_display_df,
+    amount_columns=AMOUNT_COLUMNS,
+    rate_columns=RATE_COLUMNS,
+    technical_code_columns=TECHNICAL_CODE_COLUMNS,
+    display_column_labels=DISPLAY_COLUMN_LABELS,
+    display_value_labels=DISPLAY_VALUE_LABELS,
+    validation_message_formatter=format_validation_message,
+)
+_display_column_label = partial(
+    display_column_label,
+    display_column_labels=DISPLAY_COLUMN_LABELS,
+)
+_localize_display_value = partial(
+    localize_display_value,
+    display_value_labels=DISPLAY_VALUE_LABELS,
+    validation_message_formatter=format_validation_message,
+)
+build_visual_decision_summary = partial(
+    _build_visual_decision_summary,
+    localize_display_value=_localize_display_value,
+)
 
 
 def _as_dataframe(value: Any) -> pd.DataFrame:
@@ -12244,24 +9845,6 @@ def _as_series(value: Any) -> pd.Series:
     if isinstance(value, Mapping):
         return pd.Series(dict(value))
     return pd.Series(dtype=object)
-
-
-def _as_float(value: object) -> float:
-    if _is_missing(value):
-        return float("nan")
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float("nan")
-
-
-def _is_missing(value: object) -> bool:
-    if value is None:
-        return True
-    try:
-        return bool(pd.isna(value))
-    except (TypeError, ValueError):
-        return False
 
 
 if __name__ == "__main__":

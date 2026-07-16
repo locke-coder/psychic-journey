@@ -11,15 +11,104 @@ from urllib.parse import urlencode
 PAGE_STATE_KEY = "pace_current_page"
 NAV_COLLAPSED_STATE_KEY = "pace_nav_collapsed"
 
+NAV_GROUPS = OrderedDict(
+    (
+        ("daily", {"title": "1. 일일 운영", "pages": ("home", "input", "forecast_strategy")}),
+        ("review", {"title": "2. 비교 · 보고", "pages": ("history", "raw_dashboard", "report")}),
+        ("control", {"title": "3. 공유 · 검증", "pages": ("excel", "audit")}),
+    )
+)
+
 PAGE_DEFINITIONS = OrderedDict(
     (
-        ("home", {"title": "마감 페이스 체크", "short_title": "홈"}),
-        ("input", {"title": "입력 · 데이터", "short_title": "입력"}),
-        ("forecast_strategy", {"title": "예측 · 전략 통합", "short_title": "예측전략"}),
-        ("report", {"title": "보고 메모", "short_title": "보고"}),
-        ("history", {"title": "예측 이력", "short_title": "이력"}),
-        ("excel", {"title": "Excel 공유", "short_title": "Excel"}),
-        ("audit", {"title": "검증 · 운영관리", "short_title": "검증"}),
+        (
+            "home",
+            {
+                "title": "마감 페이스 체크",
+                "short_title": "홈",
+                "group": "daily",
+                "subtitle": "오늘의 월마감 현황과 다음 판단을 먼저 확인합니다.",
+                "related": ("input", "forecast_strategy"),
+                "next_page": "input",
+            },
+        ),
+        (
+            "input",
+            {
+                "title": "입력 · 데이터",
+                "short_title": "입력",
+                "group": "daily",
+                "subtitle": "기준일, 영업일정, is_close_day와 누적 실적 입력 상태를 함께 확인합니다.",
+                "related": ("audit",),
+                "next_page": "forecast_strategy",
+            },
+        ),
+        (
+            "forecast_strategy",
+            {
+                "title": "예측 · 전략 통합",
+                "short_title": "예측전략",
+                "group": "daily",
+                "subtitle": "F1/F2/F3 예측과 선택 시나리오, 운영전략을 한 흐름에서 판단합니다.",
+                "related": ("history", "raw_dashboard"),
+                "next_page": "report",
+            },
+        ),
+        (
+            "history",
+            {
+                "title": "예측 이력",
+                "short_title": "이력",
+                "group": "review",
+                "subtitle": "완료월 예측 정확도, Backtest와 모델 신뢰도를 확인합니다.",
+                "related": ("raw_dashboard",),
+                "next_page": "report",
+            },
+        ),
+        (
+            "raw_dashboard",
+            {
+                "title": "N영업일 Raw 비교",
+                "short_title": "Raw비교",
+                "group": "review",
+                "subtitle": "HTM 기초자료를 동일 영업일차로 비교하며 예측 입력과 분리해 검증합니다.",
+                "related": ("history",),
+                "next_page": "report",
+            },
+        ),
+        (
+            "report",
+            {
+                "title": "보고 메모",
+                "short_title": "보고",
+                "group": "review",
+                "subtitle": "선택한 예측·전략의 판단 요약과 복사용 보고문을 함께 확인합니다.",
+                "related": ("forecast_strategy",),
+                "next_page": "excel",
+            },
+        ),
+        (
+            "excel",
+            {
+                "title": "Excel 공유",
+                "short_title": "Excel",
+                "group": "control",
+                "subtitle": "실제 최신 공유본과 현재 생성 예정 파일을 구분해 확인합니다.",
+                "related": ("report",),
+                "next_page": "audit",
+            },
+        ),
+        (
+            "audit",
+            {
+                "title": "검증 · 운영관리",
+                "short_title": "검증",
+                "group": "control",
+                "subtitle": "입력 검증과 저장된 테스트·Gate·보안 운영 상태를 확인합니다.",
+                "related": ("input", "excel"),
+                "next_page": "home",
+            },
+        ),
     )
 )
 
@@ -42,6 +131,19 @@ def validate_page_key(page_key: object) -> str:
 def page_title(page_key: object) -> str:
     """Return the display title for a page key."""
     return PAGE_DEFINITIONS[validate_page_key(page_key)]["title"]
+
+
+def page_subtitle(page_key: object) -> str:
+    """Return the centralized purpose statement for a page."""
+    return str(PAGE_DEFINITIONS[validate_page_key(page_key)].get("subtitle") or "")
+
+
+def page_group_title(page_key: object) -> str:
+    """Return the workflow group title for a page."""
+    definition = PAGE_DEFINITIONS[validate_page_key(page_key)]
+    group_key = str(definition.get("group") or "daily")
+    group = NAV_GROUPS.get(group_key, {})
+    return str(group.get("title") or "페이지")
 
 
 def get_current_page(st_module: Any | None = None) -> str:
@@ -96,16 +198,47 @@ def render_nav_item_html(
 def render_nav_rail_html(active_page: object, *, collapsed: bool = False) -> str:
     """Render the left navigation rail as local HTML."""
     title = "NAV" if collapsed else "페이지 이동"
-    items = "".join(
-        render_nav_item_html(page_key, active_page, collapsed=collapsed)
-        for page_key in PAGE_DEFINITIONS
+    groups = "".join(
+        '<section class="nav-group">'
+        f'<div class="nav-group__title">{escape(str(group["title"]))}</div>'
+        + "".join(
+            render_nav_item_html(page_key, active_page, collapsed=collapsed)
+            for page_key in group["pages"]
+        )
+        + "</section>"
+        for group in NAV_GROUPS.values()
     )
     collapsed_class = " is-collapsed" if collapsed else ""
     return (
         f'<aside class="nav-rail{collapsed_class}">'
         f'<div class="nav-rail__title">{escape(title)}</div>'
-        f'<div class="nav-rail__items">{items}</div>'
+        f'<div class="nav-rail__items">{groups}</div>'
         "</aside>"
+    )
+
+
+def render_page_flow_html(page_key: object) -> str:
+    """Render compact related-page and next-step links for a page header."""
+    safe_key = validate_page_key(page_key)
+    definition = PAGE_DEFINITIONS[safe_key]
+    related_keys = tuple(definition.get("related") or ())
+    next_key = validate_page_key(definition.get("next_page"))
+    related_links = " · ".join(
+        f'<a href="?{escape(urlencode({"page": validate_page_key(key)}))}">'
+        f'{escape(page_title(key))}</a>'
+        for key in related_keys
+    )
+    next_link = (
+        f'<a href="?{escape(urlencode({"page": next_key}))}">'
+        f'{escape(page_title(next_key))}</a>'
+    )
+    return (
+        '<div class="page-header__flow">'
+        '<span class="page-header__flow-item"><strong>함께 보기</strong>'
+        f'{related_links or "-"}</span>'
+        '<span class="page-header__flow-item is-next"><strong>다음 단계</strong>'
+        f'{next_link}</span>'
+        "</div>"
     )
 
 
@@ -155,16 +288,18 @@ def render_page_header_html(
     subtitle: str | None = None,
 ) -> str:
     """Render the page header for detail pages."""
+    resolved_subtitle = page_subtitle(page_key) if subtitle is None else str(subtitle)
     subtitle_html = (
-        f'<div class="page-header__subtitle">{escape(subtitle)}</div>'
-        if subtitle
+        f'<div class="page-header__subtitle">{escape(resolved_subtitle)}</div>'
+        if resolved_subtitle
         else ""
     )
     return (
         '<header class="page-header">'
-        f'<div class="page-header__eyebrow">Month-End Pace Check</div>'
+        f'<div class="page-header__eyebrow">{escape(page_group_title(page_key))}</div>'
         f'<h1>{escape(page_title(page_key))}</h1>'
         f"{subtitle_html}"
+        f"{render_page_flow_html(page_key)}"
         "</header>"
     )
 
