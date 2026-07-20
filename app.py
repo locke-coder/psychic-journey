@@ -76,7 +76,10 @@ from src.history_store import (
     load_forecast_history,
 )
 from src.private_data_store import (
+    PrivateDataStoreConfigurationError,
+    PrivateDataStoreConflictError,
     PrivateDataStoreError,
+    PrivateDataStoreRateLimitError,
     PrivateDataStoreUnavailableError,
     delete_private_data_file,
     is_private_data_store_enabled,
@@ -7441,6 +7444,71 @@ def _render_operator_sample_management(
     return current_df, current_source_label, historical_df, historical_source_label
 
 
+def _try_save_operator_sample_for_ui(
+    kind: str,
+    working_df: pd.DataFrame,
+) -> tuple[dict[str, Any] | None, PrivateDataStoreError | None]:
+    try:
+        return save_operator_sample(kind, working_df), None
+    except PrivateDataStoreError as exc:
+        return None, exc
+
+
+def _try_read_operator_metadata_for_ui(
+    kind: str,
+) -> tuple[dict[str, Any], PrivateDataStoreError | None]:
+    try:
+        return dict(read_operator_metadata().get(kind) or {}), None
+    except PrivateDataStoreError as exc:
+        return {}, exc
+
+
+def _try_load_operator_sample_for_ui(
+    kind: str,
+) -> tuple[pd.DataFrame | None, dict[str, Any] | None, PrivateDataStoreError | None]:
+    try:
+        loaded_df, source_info = load_sample_with_source(kind)
+        return loaded_df, dict(source_info), None
+    except PrivateDataStoreError as exc:
+        return None, None, exc
+
+
+def _render_operator_sample_store_error(
+    action_label: str,
+    exc: PrivateDataStoreError,
+) -> None:
+    st.error(
+        f"Private 데이터 저장소에서 운영 기본값 {action_label}에 실패했습니다. "
+        "현재 화면 입력값은 유지됩니다."
+    )
+    if isinstance(exc, PrivateDataStoreConflictError):
+        st.caption(
+            "다른 저장 작업이 먼저 반영되었습니다. 저장된 운영 기본값을 다시 불러온 뒤 "
+            "변경 내용을 확인하고 재시도해 주세요."
+        )
+    elif isinstance(exc, PrivateDataStoreConfigurationError):
+        st.caption(
+            "관리자가 Streamlit Secrets의 PRIVATE_DATA_REPO, PRIVATE_DATA_BRANCH, "
+            "PRIVATE_DATA_TOKEN 설정을 확인해야 합니다."
+        )
+    elif isinstance(exc, PrivateDataStoreRateLimitError):
+        st.caption(
+            "GitHub 요청 제한에 도달했습니다. 잠시 기다린 뒤 다시 시도하고, "
+            "반복되면 안전 진단과 GitHub 상태를 관리자에게 전달해 주세요."
+        )
+    elif any(status in str(exc) for status in ("HTTP 401", "HTTP 403", "HTTP 404")):
+        st.caption(
+            "관리자가 Streamlit Secrets의 PRIVATE_DATA_TOKEN이 해당 private 저장소 전용이며 "
+            "Contents: Read and write 권한인지 확인해야 합니다."
+        )
+    else:
+        st.caption(
+            "GitHub 또는 네트워크의 일시적 장애일 수 있습니다. 잠시 후 다시 시도하고, "
+            "계속 실패하면 아래 안전 진단을 관리자에게 전달해 주세요."
+        )
+    st.caption(f"안전 진단: {exc}")
+
+
 def _render_operator_sample_panel(
     kind: str,
     df: pd.DataFrame,
@@ -7450,7 +7518,7 @@ def _render_operator_sample_panel(
     download_file_name: str,
     audit_readonly: bool,
 ) -> tuple[pd.DataFrame, str]:
-    metadata = dict(read_operator_metadata().get(kind) or {})
+    metadata, metadata_error = _try_read_operator_metadata_for_ui(kind)
     source_display = _sample_source_display_label(source_label)
     saved_at = str(metadata.get("saved_at") or metadata.get("reset_at") or "-")
     saved_rows = metadata.get("rows")
@@ -7463,6 +7531,8 @@ def _render_operator_sample_panel(
     status_cols[2].metric("화면 row 수", str(len(df)))
     status_cols[3].metric("저장 row 수", saved_rows_display)
     st.caption(f"운영 저장 위치: {_short_display_path(operator_location)}")
+    if metadata_error is not None:
+        _render_operator_sample_store_error("상태 확인", metadata_error)
 
     editor_key = f"operator_sample_editor_{kind}"
     edited_df = st.data_editor(
@@ -7482,11 +7552,14 @@ def _render_operator_sample_panel(
         key=f"save_operator_sample_{kind}",
         disabled=audit_readonly,
     ):
-        result = save_operator_sample(kind, working_df)
-        if result.get("ok"):
-            loaded_df, _source_info = load_sample_with_source(kind)
+        result, save_error = _try_save_operator_sample_for_ui(kind, working_df)
+        if save_error is not None:
+            _render_operator_sample_store_error("저장", save_error)
+        elif result is not None and result.get("ok"):
+            saved_df = result.get("df")
+            if saved_df is not None:
+                working_df = _as_dataframe(saved_df)
             source_label = OPERATOR_SAMPLE_SOURCE_LABEL
-            working_df = loaded_df
             _store_operator_sample_state(kind, working_df, source_label)
             saved_metadata = dict(result.get("metadata") or {})
             st.success(
@@ -7496,7 +7569,7 @@ def _render_operator_sample_panel(
                 f"{result.get('rows', len(working_df))}행"
             )
             _render_operator_sample_warnings(result.get("warnings") or [])
-        else:
+        elif result is not None:
             st.error("운영 기본값으로 저장하지 못했습니다. 아래 검증 오류를 확인해 주세요.")
             _render_operator_sample_errors(result.get("errors") or [])
             _render_operator_sample_warnings(result.get("warnings") or [])
@@ -7505,15 +7578,18 @@ def _render_operator_sample_panel(
         "저장된 운영 기본값 다시 불러오기",
         key=f"reload_operator_sample_{kind}",
     ):
-        loaded_df, source_info = load_sample_with_source(kind)
-        if source_info.get("source") in {"operator", "github"}:
-            working_df = loaded_df
-            source_label = OPERATOR_SAMPLE_SOURCE_LABEL
-            _store_operator_sample_state(kind, working_df, source_label)
-            st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
-        else:
-            st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
-            _render_operator_sample_warnings(source_info.get("warnings") or [])
+        loaded_df, source_info, load_error = _try_load_operator_sample_for_ui(kind)
+        if load_error is not None:
+            _render_operator_sample_store_error("다시 불러오기", load_error)
+        elif loaded_df is not None and source_info is not None:
+            if source_info.get("source") in {"operator", "github"}:
+                working_df = loaded_df
+                source_label = OPERATOR_SAMPLE_SOURCE_LABEL
+                _store_operator_sample_state(kind, working_df, source_label)
+                st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
+            else:
+                st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
+                _render_operator_sample_warnings(source_info.get("warnings") or [])
 
     if packaged_col.button(
         "내장 샘플로 화면 초기화",

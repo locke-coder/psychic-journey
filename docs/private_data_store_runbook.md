@@ -32,9 +32,10 @@ cutover. When both sets exist, `PRIVATE_DATA_*` takes precedence.
 stops the app. `local_demo` is the only mode that permits packaged/local sample
 storage and must be selected explicitly for isolated demo or development use.
 
-Use a fine-grained token limited to the single private data repository with the
-minimum repository contents permission required to read and write files. Rotate
-the token periodically and immediately after suspected exposure.
+Use a fine-grained token limited to the single private data repository. Set
+`Repository access` to that repository only and set `Repository permissions >
+Contents` to `Read and write`. Rotate the token periodically and immediately
+after suspected exposure.
 
 ## Durable paths
 
@@ -66,6 +67,27 @@ repository.
 - Single CSV updates use the previously read blob SHA. A concurrent update is
   rejected and must be retried after reloading current data.
 - Error messages do not include token values or GitHub response bodies.
+
+## Save failure triage
+
+The app retries transient `429`, `500`, `502`, `503`, and `504` responses up to
+three times for reads and immutable Git object creation. If GitHub requests a
+delay longer than the 10-second per-retry delay ceiling, the app stops automatic
+retries and asks the operator to retry later. It does not blindly retry the
+final branch-reference update because the first request may already have
+completed even when its response was lost.
+
+If saving still fails, check the safe HTTP status in the Streamlit app log:
+
+- `401`: replace an expired or invalid `PRIVATE_DATA_TOKEN`.
+- `403` or `404`: confirm the token is scoped to the configured private
+  repository and has `Contents: Read and write` permission.
+- `409` or `422`: reload the latest operator sample, then retry the save.
+- `429` or `5xx`: wait briefly and retry; if it persists, check GitHub status
+  and the configured timeout.
+
+After changing a token, update `PRIVATE_DATA_TOKEN` in Streamlit Secrets and
+restart the app. Never place the token in the code repository or data files.
 
 ## One-time migration
 

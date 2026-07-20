@@ -23,6 +23,15 @@ def test_app_wires_current_and_historical_operator_sample_save_paths() -> None:
     assert '"historical_input"' in app_source
 
 
+def test_operator_sample_private_store_errors_are_rendered_without_page_failure() -> None:
+    app_source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "_try_save_operator_sample_for_ui" in app_source
+    assert "except PrivateDataStoreError as exc:" in app_source
+    assert "_render_operator_sample_store_error" in app_source
+    assert "Contents: Read and write" in app_source
+
+
 def test_source_has_no_close_day_auto_inference_patterns() -> None:
     patterns = [
         "weekday",

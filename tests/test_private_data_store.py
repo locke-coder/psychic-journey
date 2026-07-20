@@ -12,6 +12,7 @@ from src.private_data_store import (
     PrivateDataFile,
     PrivateDataStoreConfig,
     PrivateDataStoreConflictError,
+    PrivateDataStoreRateLimitError,
     PrivateDataStoreUnavailableError,
     get_private_data_store_config,
     read_private_data_file,
@@ -179,6 +180,172 @@ def test_access_error_is_sanitized(monkeypatch, status_code: int) -> None:
     assert f"HTTP {status_code}" in message
     assert config.token not in message
     assert "Bad credentials" not in message
+
+
+def test_retryable_git_blob_error_retries_then_succeeds(monkeypatch) -> None:
+    config = _config()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, timeout: int):
+        nonlocal attempts
+        assert timeout == config.timeout
+        assert request.get_method() == "POST"
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                503,
+                "temporary GitHub failure",
+                {},
+                io.BytesIO(b'{"message":"temporary"}'),
+            )
+        return io.BytesIO(b'{"sha":"blob-sha"}')
+
+    monkeypatch.setattr(private_store.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(private_store.time, "sleep", sleeps.append)
+
+    result = private_store._api_request(
+        "POST",
+        "/repos/example/private-data/git/blobs",
+        config,
+        {"content": "Y29udGVudA==", "encoding": "base64"},
+    )
+
+    assert result == {"sha": "blob-sha"}
+    assert attempts == 2
+    assert sleeps == [private_store._RETRY_BASE_DELAY_SECONDS]
+
+
+def test_retryable_git_blob_error_is_sanitized_after_retry_limit(monkeypatch) -> None:
+    config = _config()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, timeout: int):
+        nonlocal attempts
+        assert timeout == config.timeout
+        attempts += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            503,
+            "super-secret-token",
+            {},
+            io.BytesIO(b'{"message":"super-secret-token"}'),
+        )
+
+    monkeypatch.setattr(private_store.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(private_store.time, "sleep", sleeps.append)
+
+    with pytest.raises(PrivateDataStoreUnavailableError) as exc_info:
+        private_store._api_request(
+            "POST",
+            "/repos/example/private-data/git/blobs",
+            config,
+            {"content": "Y29udGVudA==", "encoding": "base64"},
+        )
+
+    message = str(exc_info.value)
+    assert "HTTP 503" in message
+    assert config.token not in message
+    assert attempts == private_store._MAX_RETRY_ATTEMPTS
+    assert len(sleeps) == private_store._MAX_RETRY_ATTEMPTS - 1
+
+
+def test_ambiguous_ref_update_is_not_retried(monkeypatch) -> None:
+    config = _config()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, timeout: int):
+        nonlocal attempts
+        assert timeout == config.timeout
+        attempts += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            503,
+            "temporary GitHub failure",
+            {},
+            io.BytesIO(b'{"message":"temporary"}'),
+        )
+
+    monkeypatch.setattr(private_store.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(private_store.time, "sleep", sleeps.append)
+
+    with pytest.raises(PrivateDataStoreUnavailableError, match="HTTP 503"):
+        private_store._api_request(
+            "PATCH",
+            "/repos/example/private-data/git/refs/heads/main",
+            config,
+            {"sha": "commit-sha", "force": False},
+        )
+
+    assert attempts == 1
+    assert sleeps == []
+
+
+def test_long_server_retry_after_skips_automatic_retry(monkeypatch) -> None:
+    config = _config()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, timeout: int):
+        nonlocal attempts
+        assert timeout == config.timeout
+        attempts += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "rate limited",
+            {"Retry-After": "60"},
+            io.BytesIO(b'{"message":"rate limited"}'),
+        )
+
+    monkeypatch.setattr(private_store.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(private_store.time, "sleep", sleeps.append)
+
+    with pytest.raises(PrivateDataStoreRateLimitError, match="HTTP 429"):
+        private_store._api_request(
+            "POST",
+            "/repos/example/private-data/git/blobs",
+            config,
+            {"content": "Y29udGVudA==", "encoding": "base64"},
+        )
+
+    assert attempts == 1
+    assert sleeps == []
+
+
+def test_rate_limited_403_keeps_rate_limit_classification(monkeypatch) -> None:
+    config = _config()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fake_urlopen(request, timeout: int):
+        nonlocal attempts
+        assert timeout == config.timeout
+        attempts += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            403,
+            "secondary rate limit",
+            {"X-RateLimit-Remaining": "0"},
+            io.BytesIO(b'{"message":"secondary rate limit"}'),
+        )
+
+    monkeypatch.setattr(private_store.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(private_store.time, "sleep", sleeps.append)
+
+    with pytest.raises(PrivateDataStoreRateLimitError, match="HTTP 403"):
+        private_store._api_request(
+            "POST",
+            "/repos/example/private-data/git/blobs",
+            config,
+            {"content": "Y29udGVudA==", "encoding": "base64"},
+        )
+
+    assert attempts == private_store._MAX_RETRY_ATTEMPTS
+    assert len(sleeps) == private_store._MAX_RETRY_ATTEMPTS - 1
 
 
 @pytest.mark.parametrize(

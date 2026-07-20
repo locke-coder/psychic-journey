@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,6 +42,10 @@ LOCAL_DEMO_DATA_MODE = "local_demo"
 GITHUB_API_BASE_URL = "https://api.github.com"
 _REPO_PATTERN = re.compile(r"[\w.-]+/[\w.-]+")
 _AUTO_SHA = object()
+_MAX_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 0.25
+_RETRY_MAX_DELAY_SECONDS = 10.0
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 class PrivateDataStoreError(RuntimeError):
@@ -53,6 +58,10 @@ class PrivateDataStoreConfigurationError(PrivateDataStoreError):
 
 class PrivateDataStoreUnavailableError(PrivateDataStoreError):
     """Raised when the configured private store cannot be reached."""
+
+
+class PrivateDataStoreRateLimitError(PrivateDataStoreUnavailableError):
+    """Raised when GitHub asks the application to slow down."""
 
 
 class PrivateDataStoreConflictError(PrivateDataStoreError):
@@ -486,6 +495,56 @@ def _contents_api_path(config: PrivateDataStoreConfig, full_path: str) -> str:
     return f"/repos/{config.repo}/contents/{encoded_path}"
 
 
+def _is_retry_safe(method: str, api_path: str) -> bool:
+    normalized_method = str(method).upper()
+    if normalized_method == "GET":
+        return True
+    return normalized_method == "POST" and api_path.endswith(
+        ("/git/blobs", "/git/trees", "/git/commits")
+    )
+
+
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
+    if exc.headers is None:
+        return None
+    raw_value = str(exc.headers.get("Retry-After") or "").strip()
+    if not raw_value:
+        return None
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return None
+
+
+def _is_rate_limit_http_error(exc: urllib.error.HTTPError) -> bool:
+    if exc.code == 429:
+        return True
+    if exc.code != 403 or exc.headers is None:
+        return False
+    retry_after = str(exc.headers.get("Retry-After") or "").strip()
+    remaining = str(exc.headers.get("X-RateLimit-Remaining") or "").strip()
+    return bool(retry_after) or remaining == "0"
+
+
+def _is_retryable_http_error(exc: urllib.error.HTTPError) -> bool:
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None and retry_after > _RETRY_MAX_DELAY_SECONDS:
+        return False
+    if exc.code in _RETRYABLE_HTTP_STATUS_CODES:
+        return True
+    return _is_rate_limit_http_error(exc)
+
+
+def _retry_delay_seconds(
+    attempt: int,
+    exc: urllib.error.HTTPError | None = None,
+) -> float:
+    requested_delay = _retry_after_seconds(exc) if exc is not None else None
+    if requested_delay is None:
+        requested_delay = _RETRY_BASE_DELAY_SECONDS * (2**attempt)
+    return min(_RETRY_MAX_DELAY_SECONDS, max(0.0, requested_delay))
+
+
 def _api_request(
     method: str,
     api_path: str,
@@ -506,34 +565,53 @@ def _api_request(
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=config.timeout) as response:
-            response_body = response.read()
-    except urllib.error.HTTPError as exc:
-        if method == "GET" and exc.code == 404:
-            return None
-        if exc.code in {409, 422}:
-            raise PrivateDataStoreConflictError(
-                "private data changed before this operation completed; reload and retry"
-            ) from exc
-        if exc.code in {401, 403, 404}:
+    retry_safe = _is_retry_safe(method, api_path)
+    for attempt in range(_MAX_RETRY_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=config.timeout) as response:
+                response_body = response.read()
+        except urllib.error.HTTPError as exc:
+            should_retry = (
+                retry_safe
+                and _is_retryable_http_error(exc)
+                and attempt + 1 < _MAX_RETRY_ATTEMPTS
+            )
+            if should_retry:
+                time.sleep(_retry_delay_seconds(attempt, exc))
+                continue
+            if method == "GET" and exc.code == 404:
+                return None
+            if _is_rate_limit_http_error(exc):
+                raise PrivateDataStoreRateLimitError(
+                    f"private data store rate limited with HTTP {exc.code}"
+                ) from exc
+            if exc.code in {409, 422}:
+                raise PrivateDataStoreConflictError(
+                    "private data changed before this operation completed; reload and retry"
+                ) from exc
+            if exc.code in {401, 403, 404}:
+                raise PrivateDataStoreUnavailableError(
+                    f"private data store access failed with HTTP {exc.code}"
+                ) from exc
             raise PrivateDataStoreUnavailableError(
-                f"private data store access failed with HTTP {exc.code}"
+                f"private data store request failed with HTTP {exc.code}"
             ) from exc
-        raise PrivateDataStoreUnavailableError(
-            f"private data store request failed with HTTP {exc.code}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise PrivateDataStoreUnavailableError(
-            "private data store network request failed"
-        ) from exc
+        except urllib.error.URLError as exc:
+            if retry_safe and attempt + 1 < _MAX_RETRY_ATTEMPTS:
+                time.sleep(_retry_delay_seconds(attempt))
+                continue
+            raise PrivateDataStoreUnavailableError(
+                "private data store network request failed"
+            ) from exc
 
-    if not response_body:
-        return {}
-    try:
-        decoded = json.loads(response_body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PrivateDataStoreUnavailableError(
-            "private data store returned an invalid response"
-        ) from exc
-    return decoded if isinstance(decoded, (dict, list)) else {}
+        if not response_body:
+            return {}
+        try:
+            decoded = json.loads(response_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PrivateDataStoreUnavailableError(
+                "private data store returned an invalid response"
+            ) from exc
+        return decoded if isinstance(decoded, (dict, list)) else {}
+
+    raise PrivateDataStoreUnavailableError("private data store retry limit exceeded")
