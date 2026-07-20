@@ -95,6 +95,25 @@ def test_mismatched_excel_is_refresh_not_false_ready() -> None:
     assert "현재 생성 예정 daily_report_sales_20260715.xlsx" in excel_row["근거"]
 
 
+def test_versioned_excel_for_same_metric_and_date_is_current() -> None:
+    kwargs = _base_kwargs()
+    kwargs["latest_excel_status"] = {
+        "exists": True,
+        "file_name": "daily_report_sales_20260715_v2.xlsx",
+        "modified_at": "2026-07-15 11:00:00",
+    }
+
+    result = build_operational_closeout_summary(**kwargs)
+    excel_row = result["items"].loc[
+        result["items"]["단계"] == "Excel 공유본"
+    ].iloc[0]
+
+    assert result["overall_code"] == MANUAL
+    assert excel_row["code"] == PASS
+    assert excel_row["상태"] == "최신"
+    assert "daily_report_sales_20260715_v2.xlsx" in excel_row["근거"]
+
+
 def test_stale_or_missing_audit_log_requires_refresh() -> None:
     kwargs = _base_kwargs()
     kwargs["audit_logs"] = pd.DataFrame(

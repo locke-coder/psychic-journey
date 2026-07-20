@@ -455,12 +455,173 @@ def test_scenario_progress_chart_keeps_daily_line_points() -> None:
         app_module.st = original_st
 
     assert fake_st.chart_specs
-    line_x_fields = {
-        layer["encoding"]["x"]["field"]
-        for layer in fake_st.chart_specs[0]["layer"]
-        if layer.get("mark", {}).get("type") == "line"
-    }
-    assert line_x_fields == {"date"}
+    spec = fake_st.chart_specs[0]
+    assert spec["mark"]["type"] == "line"
+    assert spec["mark"]["point"]["filled"] is True
+    assert spec["encoding"]["x"]["field"] == "date_label"
+
+
+def test_scenario_progress_chart_omits_empty_optional_layers(monkeypatch) -> None:
+    df = load_input(SAMPLE_INPUT_PATH)
+    config = build_runtime_config(load_model_config(), 1.30, 1.50)
+    as_of_date = default_as_of_date(df, "sales", today="2026-06-11")
+    results = calculate_validated_results(df, as_of_date, "sales", config)
+    source = build_scenario_daily_forecast_source(
+        df,
+        results["scenario_df"],
+        as_of_date,
+        "sales",
+        config,
+        "F1_P1",
+    )
+    source["is_close_day"] = False
+    source["is_as_of_date"] = False
+    source.loc[source["series_type"] == "확정 실적", "achievement_rate"] = pd.NA
+    captured: dict[str, object] = {}
+
+    class FakeStreamlit:
+        def info(self, *_args, **_kwargs) -> None:
+            return None
+
+        def caption(self, *_args, **_kwargs) -> None:
+            return None
+
+        def altair_chart(self, chart, *_args, **_kwargs) -> None:
+            captured["spec"] = chart.to_dict(validate=True)
+
+    monkeypatch.setattr(app_module, "st", FakeStreamlit())
+
+    app_module._render_scenario_daily_forecast_chart(
+        source,
+        results["scenario_df"],
+        "F1_P1",
+    )
+
+    spec = captured["spec"]
+    assert "layer" not in spec
+    assert spec["mark"]["type"] == "line"
+    assert spec["encoding"]["x"]["field"] == "date_label"
+
+
+def test_remaining_operation_direction_uses_stable_table(monkeypatch) -> None:
+    source = pd.DataFrame(
+        {
+            "date": ["2026-07-17", "2026-07-20"],
+            "date_label": ["07/17", "07/20"],
+            "scenario_id": ["F1_O1", "F1_O1"],
+            "strategy_type": ["OVERACHIEVEMENT", "OVERACHIEVEMENT"],
+            "day_type": ["일반일", "마감일"],
+            "close_type": ["", "정기마감"],
+            "operation_mode": ["버퍼 방어", "버퍼 방어"],
+            "direction": ["버퍼 방어", "버퍼 방어"],
+            "direction_detail": ["유지", "유지"],
+            "original_target": [8.0, 10.0],
+            "uplift": [0.0, 0.0],
+            "revised_target": [8.0, 10.0],
+            "expected_daily": [pd.NA, pd.NA],
+            "expected_rate": [pd.NA, pd.NA],
+        }
+    )
+    captured: dict[str, object] = {}
+
+    class FakeStreamlit:
+        def info(self, *_args, **_kwargs) -> None:
+            return None
+
+        def caption(self, *_args, **_kwargs) -> None:
+            return None
+
+        def dataframe(self, frame, *_args, **_kwargs) -> None:
+            captured["dataframe"] = frame
+
+    monkeypatch.setattr(app_module, "st", FakeStreamlit())
+
+    app_module._render_remaining_operation_direction_chart(source)
+
+    display = captured["dataframe"]
+    assert len(display) == 2
+    assert "운영 방향" in display.columns
+    assert "관리 목표" in display.columns
+
+
+def test_finite_chart_rows_drops_nan_and_infinite_axis_values() -> None:
+    source = pd.DataFrame(
+        {
+            "value": [1.0, float("nan"), float("inf"), -float("inf"), 2.0],
+            "label": ["a", "b", "c", "d", "e"],
+        }
+    )
+
+    result = app_module._finite_chart_rows(source, ("value",))
+
+    assert result["value"].tolist() == [1.0, 2.0]
+    assert result["label"].tolist() == ["a", "e"]
+
+
+def test_single_date_forecast_history_uses_table_instead_of_chart(monkeypatch) -> None:
+    history = pd.DataFrame(
+        {
+            "as_of_date": ["2026-06-08", "2026-06-08"],
+            "forecast_model": ["F1", "F2"],
+            "forecast_amount": [120.0, 125.0],
+        }
+    )
+    captured: dict[str, object] = {}
+
+    class FakeStreamlit:
+        def markdown(self, *_args, **_kwargs) -> None:
+            return None
+
+        def info(self, message, *_args, **_kwargs) -> None:
+            captured["info"] = message
+
+        def dataframe(self, frame, *_args, **_kwargs) -> None:
+            captured["dataframe"] = frame
+
+        def altair_chart(self, *_args, **_kwargs) -> None:
+            raise AssertionError("a one-date history must not render a trend chart")
+
+    monkeypatch.setattr(app_module, "st", FakeStreamlit())
+
+    app_module._render_forecast_history_trend_chart(history)
+
+    assert "기준일이 1개" in str(captured["info"])
+    assert len(captured["dataframe"]) == 2
+
+
+def test_target_status_distribution_uses_stable_table(monkeypatch) -> None:
+    history = pd.DataFrame(
+        {"target_status": ["UNDER_TARGET", "UNDER_TARGET", "OVER_TARGET"]}
+    )
+    captured: dict[str, object] = {}
+
+    class FakeStreamlit:
+        def markdown(self, *_args, **_kwargs) -> None:
+            return None
+
+        def info(self, *_args, **_kwargs) -> None:
+            return None
+
+        def dataframe(self, frame, *_args, **_kwargs) -> None:
+            captured["dataframe"] = frame
+
+        def altair_chart(self, *_args, **_kwargs) -> None:
+            raise AssertionError("target status counts must use the stable table view")
+
+    monkeypatch.setattr(app_module, "st", FakeStreamlit())
+
+    app_module._render_target_status_distribution(history)
+
+    display = captured["dataframe"]
+    assert list(display.columns) == ["목표 상태", "건수"]
+    assert display["건수"].tolist() == [2, 1]
+
+
+def test_forecast_page_history_detail_is_lazy_loaded() -> None:
+    app_source = Path("app.py").read_text(encoding="utf-8")
+
+    assert "이 화면에서 과거 이력 불러오기" in app_source
+    assert 'key="load_forecast_strategy_history_detail"' in app_source
 
 
 def test_forecast_model_view_filters_scenarios_and_builds_operation_direction() -> None:

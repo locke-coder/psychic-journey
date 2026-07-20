@@ -60,9 +60,21 @@ def test_legacy_query_page_aliases_normalize_to_unified_page() -> None:
 
     assert get_current_page(FakeStreamlit) == "forecast_strategy"
     assert FakeStreamlit.session_state["pace_current_page"] == "forecast_strategy"
+    assert FakeStreamlit.query_params["page"] == "forecast_strategy"
 
     FakeStreamlit.query_params = {"page": "scenarios"}
     assert get_current_page(FakeStreamlit) == "forecast_strategy"
+    assert FakeStreamlit.query_params["page"] == "forecast_strategy"
+
+
+def test_removed_raw_dashboard_query_canonicalizes_to_home() -> None:
+    class FakeStreamlit:
+        query_params = {"page": "raw_dashboard", "audit_readonly": "1"}
+        session_state = {}
+
+    assert get_current_page(FakeStreamlit) == "home"
+    assert FakeStreamlit.query_params == {"page": "home", "audit_readonly": "1"}
+    assert FakeStreamlit.session_state["pace_current_page"] == "home"
 
 
 def test_visible_nav_exposes_unified_forecast_strategy_once() -> None:

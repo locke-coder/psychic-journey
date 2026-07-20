@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from math import isfinite
+import re
 from typing import Mapping
 
 import pandas as pd
@@ -99,7 +100,7 @@ def build_operational_closeout_summary(
     excel_current = (
         latest_exists
         and expected_is_file
-        and latest_name.lower() == expected_name.lower()
+        and _same_excel_report_revision(latest_name, expected_name)
     )
     if excel_current:
         excel_code = PASS
@@ -202,6 +203,19 @@ def _audit_log_state(audit_logs: pd.DataFrame | None) -> dict[str, str]:
         "label": "통과",
         "evidence": f"저장 로그 {len(audit_logs)}개 항목이 7일 이내입니다.",
     }
+
+
+def _same_excel_report_revision(actual_name: str, expected_name: str) -> bool:
+    """Treat a versioned workbook as current when its metric/date base matches."""
+    actual_key = _excel_report_key(actual_name)
+    expected_key = _excel_report_key(expected_name)
+    return bool(actual_key and expected_key and actual_key == expected_key)
+
+
+def _excel_report_key(file_name: object) -> str:
+    normalized = str(file_name or "").strip().lower()
+    match = re.fullmatch(r"(?P<base>daily_report_.+?)(?:_v[1-9]\d*)?\.xlsx", normalized)
+    return match.group("base") if match else ""
 
 
 def _next_action(items: pd.DataFrame, overall_code: str) -> str:

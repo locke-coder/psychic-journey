@@ -140,6 +140,8 @@ def get_current_page(st_module: Any | None = None) -> str:
     query_page = _query_param_page(st_module)
     if query_page:
         page_key = validate_page_key(query_page)
+        if str(query_page).strip() != page_key:
+            _replace_query_page(st_module, page_key)
         _set_session_page(st_module, page_key)
         return page_key
 
@@ -341,6 +343,24 @@ def _session_get(st_module: Any | None, key: str, default: object = None) -> obj
 def _set_session_page(st_module: Any | None, page_key: str) -> None:
     if st_module is not None and hasattr(st_module, "session_state"):
         st_module.session_state[PAGE_STATE_KEY] = page_key
+
+
+def _replace_query_page(st_module: Any | None, page_key: str) -> None:
+    """Canonicalize legacy or removed page keys without dropping other params."""
+    if st_module is None:
+        return
+    try:
+        st_module.query_params["page"] = page_key
+        return
+    except Exception:  # noqa: BLE001 - compatibility with older Streamlit.
+        pass
+
+    try:
+        current = dict(st_module.experimental_get_query_params())
+        current["page"] = page_key
+        st_module.experimental_set_query_params(**current)
+    except Exception:  # noqa: BLE001 - query canonicalization is best effort.
+        return
 
 
 def _rerun(st_module: Any) -> None:

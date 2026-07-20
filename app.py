@@ -3662,17 +3662,25 @@ def _render_forecast_strategy_detail_page(context: Mapping[str, Any]) -> None:
         _render_selected_scenario_summary(selected_scenario_id, selected_row)
         st.dataframe(_format_display_df(scenario_df), use_container_width=True)
     with st.expander("과거 이력 / Backtest 참고", expanded=False):
-        _render_historical_context_panel(
-            dict(context.get("historical_context") or {}),
-            scenario_df,
-            selected_scenario_id,
-        )
-        _render_forecast_history_backtest_tab(
-            scenario_df,
-            str(context["metric"]),
-            context["as_of_date"],
-            audit_readonly=bool(context.get("audit_readonly", False)),
-        )
+        st.caption("상세 이력은 예측 이력 페이지에서 바로 확인할 수 있습니다.")
+        if st.toggle(
+            "이 화면에서 과거 이력 불러오기",
+            value=False,
+            key="load_forecast_strategy_history_detail",
+        ):
+            _render_historical_context_panel(
+                dict(context.get("historical_context") or {}),
+                scenario_df,
+                selected_scenario_id,
+            )
+            _render_forecast_history_backtest_tab(
+                scenario_df,
+                str(context["metric"]),
+                context["as_of_date"],
+                audit_readonly=bool(context.get("audit_readonly", False)),
+            )
+        else:
+            st.info("필요할 때만 이력 데이터를 불러와 초기 화면의 렌더링 부담을 줄입니다.")
 
 
 def _render_forecast_strategy_summary_board(
@@ -4257,7 +4265,7 @@ def _render_audit_detail_page(context: Mapping[str, Any]) -> None:
     if bool(context.get("audit_readonly", False)):
         st.info("읽기 전용 감리 모드: 이 페이지 조회 중 outputs 파일을 생성하거나 갱신하지 않습니다.")
     st.write("- 화면 기준: 현재 소스와 audit/logs의 최근 저장 로그를 읽기 전용으로 조회합니다.")
-    st.write("- Auth Gate: 로컬 운영 기준이며, 외부 배포 전 보안 복원 예정입니다.")
+    st.write("- Auth Gate: localhost 미리보기는 로컬로 통과하며, 외부 배포 URL은 비밀번호가 없으면 닫힌 상태로 중지합니다.")
     st.write("- `.streamlit/secrets.toml`은 로컬 전용이며 감리/배포 패키지에 포함하지 않습니다.")
     st.write("- 실데이터, 고객/계약/개인 식별정보의 외부 공개는 금지됩니다.")
     st.warning(SECURITY_WARNING_TEXT)
@@ -8442,7 +8450,10 @@ def _render_forecast_history_backtest_tab(
         )
 
     if final_actuals.empty:
-        st.info("final_actuals가 아직 없습니다. 월마감 확정 실적이 저장되면 Backtest 오차율을 계산합니다.")
+        st.info(
+            "Backtest 준비 중(차단 아님): final_actuals가 아직 없습니다. "
+            "월마감 확정 실적이 저장되면 오차율을 계산하며, 현재 월 F1/F2/F3 예측에는 영향이 없습니다."
+        )
     else:
         st.markdown("final_actuals 테이블")
         st.dataframe(
@@ -8540,6 +8551,10 @@ def _render_forecast_history_trend_chart(forecast_history: pd.DataFrame) -> None
     if source.empty:
         st.info("예측 추이 그래프를 만들 forecast_amount 이력이 없습니다.")
         return
+    if source["as_of_date"].nunique() < 2:
+        st.info("저장된 예측 기준일이 1개라 추이선 대신 정확 수치표를 표시합니다.")
+        st.dataframe(_format_display_df(source), hide_index=True, use_container_width=True)
+        return
 
     chart = (
         alt.Chart(source)
@@ -8561,7 +8576,7 @@ def _render_forecast_history_trend_chart(forecast_history: pd.DataFrame) -> None
         )
         .properties(height=300)
     )
-    st.altair_chart(chart, use_container_width=True)
+    _render_altair_chart_inline(chart)
 
 
 def _render_target_status_distribution(forecast_history: pd.DataFrame) -> None:
@@ -8579,21 +8594,15 @@ def _render_target_status_distribution(forecast_history: pd.DataFrame) -> None:
         .reset_index(name="count")
     )
     source["target_status_label"] = source["target_status"].map(_localize_display_value)
-    chart = (
-        alt.Chart(source)
-        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
-        .encode(
-            x=alt.X("target_status_label:N", title="목표 상태", sort=None),
-            y=alt.Y("count:Q", title="건수", axis=alt.Axis(format="d")),
-            color=alt.Color("target_status_label:N", title="목표 상태"),
-            tooltip=[
-                alt.Tooltip("target_status_label:N", title="목표 상태"),
-                alt.Tooltip("count:Q", title="건수", format="d"),
-            ],
-        )
-        .properties(height=260)
+    source = _finite_chart_rows(source, ("count",))
+    source = source.loc[source["target_status_label"].astype(str).str.strip().ne("")]
+    if source.empty:
+        st.info("target_status 분포를 만들 유효한 예측 이력이 없습니다.")
+        return
+    display = source.loc[:, ["target_status_label", "count"]].rename(
+        columns={"target_status_label": "목표 상태", "count": "건수"}
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.dataframe(display, hide_index=True, use_container_width=True)
 
 
 def _render_gap_surplus_trend_chart(forecast_history: pd.DataFrame) -> None:
@@ -8604,6 +8613,10 @@ def _render_gap_surplus_trend_chart(forecast_history: pd.DataFrame) -> None:
     )
     if source.empty:
         st.info("gap_to_target / surplus_to_target 추이를 만들 이력이 없습니다.")
+        return
+    if source["as_of_date"].nunique() < 2:
+        st.info("저장된 예측 기준일이 1개라 차이 추이선 대신 정확 수치표를 표시합니다.")
+        st.dataframe(_format_display_df(source), hide_index=True, use_container_width=True)
         return
 
     chart = (
@@ -8628,7 +8641,7 @@ def _render_gap_surplus_trend_chart(forecast_history: pd.DataFrame) -> None:
         )
         .properties(height=300)
     )
-    st.altair_chart(chart, use_container_width=True)
+    _render_altair_chart_inline(chart)
 
 
 def _render_optional_weighted_forecast(forecast_history: pd.DataFrame) -> None:
@@ -8638,7 +8651,10 @@ def _render_optional_weighted_forecast(forecast_history: pd.DataFrame) -> None:
         WEIGHTED_FORECAST_COLUMN_TOKENS,
     )
     if not weighted_columns:
-        st.caption("Weighted Forecast 데이터가 아직 없습니다.")
+        st.info(
+            "선택 데이터 준비 중: 완료월 Backtest 표본이 쌓이면 ModelWeights를 표시합니다. "
+            "현재 기본 F1/F2/F3 비교는 정상적으로 사용할 수 있습니다."
+        )
         return
 
     display_columns = _available_columns(
@@ -8659,7 +8675,10 @@ def _render_optional_confidence_band(forecast_history: pd.DataFrame) -> None:
     st.markdown("**ConfidenceBand**")
     band_pair = _confidence_band_pair(forecast_history)
     if band_pair is None:
-        st.caption("Confidence Band 데이터가 아직 없습니다.")
+        st.info(
+            "선택 데이터 준비 중: 완료월 오차 표본이 쌓이면 Confidence Band를 표시합니다. "
+            "현재 예측값과 기본 도착 구간 계산은 계속 제공됩니다."
+        )
         return
 
     lower_column, upper_column = band_pair
@@ -8975,12 +8994,16 @@ def _render_historical_forecast_comparison_chart(comparison_df: pd.DataFrame) ->
 
 
 def _render_historical_progress_chart(chart_data: pd.DataFrame) -> None:
-    if chart_data.empty:
+    chart_source = _finite_chart_rows(
+        chart_data,
+        ("business_day_no", "achievement_rate"),
+    )
+    if chart_source.empty:
         st.info("과거 누적 흐름 차트 데이터 없음")
         return
 
     chart = (
-        alt.Chart(chart_data)
+        alt.Chart(chart_source)
         .mark_line(point=True, strokeWidth=2.3)
         .encode(
             x=alt.X(
@@ -9187,95 +9210,15 @@ def _render_remaining_operation_direction_panel(
 
     st.markdown("**잔여기간 일자별 운영 방향**")
     _render_remaining_operation_direction_chart(direction_source)
-    with st.expander("잔여기간 운영 방향표", expanded=False):
-        st.dataframe(
-            _format_remaining_operation_direction_df(direction_source),
-            hide_index=True,
-            use_container_width=True,
-        )
 
 
 def _render_remaining_operation_direction_chart(source: pd.DataFrame) -> None:
-    chart_source = source.copy()
-    chart_source["date"] = pd.to_datetime(chart_source["date"], errors="coerce")
-    chart_source = chart_source.dropna(subset=["date"])
-    if chart_source.empty:
-        st.info("잔여기간 운영 방향 차트 데이터 없음")
+    display = _format_remaining_operation_direction_df(source)
+    if display.empty:
+        st.info("잔여기간 운영 방향 데이터 없음")
         return
-
-    for column in ("original_target", "uplift", "revised_target", "expected_daily"):
-        chart_source[column] = pd.to_numeric(chart_source[column], errors="coerce")
-
-    date_order = chart_source["date_label"].tolist()
-    bar = (
-        alt.Chart(chart_source)
-        .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
-        .encode(
-            x=alt.X(
-                "date_label:N",
-                title=None,
-                sort=date_order,
-                axis=alt.Axis(labelAngle=-30, labelLimit=110),
-            ),
-            y=alt.Y(
-                "revised_target:Q",
-                title="일자별 관리 목표(억원)",
-                axis=alt.Axis(format=chart_value_format("억원")),
-            ),
-            color=alt.Color(
-                "direction:N",
-                title="운영 방향",
-                scale=alt.Scale(
-                    domain=[
-                        "추가 배분",
-                        "상한 점검",
-                        "기존 목표 유지",
-                        "버퍼 방어",
-                        "Stretch 후보",
-                        "유지 모니터링",
-                    ],
-                    range=[
-                        "#2563EB",
-                        "#DC2626",
-                        "#94A3B8",
-                        "#059669",
-                        "#7C3AED",
-                        "#0F766E",
-                    ],
-                ),
-            ),
-            tooltip=[
-                alt.Tooltip("date_label:N", title="날짜"),
-                alt.Tooltip("day_type:N", title="일자 구분"),
-                alt.Tooltip("operation_mode:N", title="운영 모드"),
-                alt.Tooltip("direction:N", title="운영 방향"),
-                alt.Tooltip("original_target:Q", title="기존 일 목표", format=chart_value_format("억원")),
-                alt.Tooltip("uplift:Q", title="업리프트", format=chart_value_format("억원")),
-                alt.Tooltip("revised_target:Q", title="관리 목표", format=chart_value_format("억원")),
-                alt.Tooltip("expected_daily:Q", title="예상 일실적", format=chart_value_format("억원")),
-                alt.Tooltip("direction_detail:N", title="해석"),
-            ],
-        )
-    )
-    expected_line = (
-        alt.Chart(chart_source)
-        .mark_line(point=True, color="#111827", strokeWidth=2)
-        .encode(
-            x=alt.X("date_label:N", sort=date_order),
-            y=alt.Y("expected_daily:Q"),
-            tooltip=[
-                alt.Tooltip("date_label:N", title="날짜"),
-                alt.Tooltip("expected_daily:Q", title="예상 일실적", format=chart_value_format("억원")),
-            ],
-        )
-    )
-    chart = (
-        (bar + expected_line)
-        .properties(height=280)
-        .configure_axis(labelFontSize=11, titleFontSize=12)
-        .configure_legend(labelFontSize=11, titleFontSize=12)
-    )
-    st.altair_chart(chart, use_container_width=True)
+    st.caption("관리 목표, 예상 일실적과 운영 방향을 날짜별 정확 수치로 표시합니다.")
+    st.dataframe(display, hide_index=True, use_container_width=True)
 
 
 def _render_scenario_daily_forecast_chart(
@@ -9299,185 +9242,125 @@ def _render_scenario_daily_forecast_chart(
     target_source = (
         chart_source.loc[
             :,
-            [
-                "date",
-                "week_end",
-                "week_label",
-                "target_cum",
-                "monthly_target",
-                "target_achievement_rate",
-                "target_achievement_label",
-            ],
+            ["date", "date_label", "week_label", "target_cum", "monthly_target", "target_achievement_rate"],
         ]
         .drop_duplicates("date")
         .sort_values("date")
     )
-    week_marker_source = (
-        chart_source.loc[:, ["week_start", "week_label"]]
-        .dropna(subset=["week_start"])
-        .drop_duplicates("week_start")
-        .sort_values("week_start")
+    target_source = _finite_chart_rows(target_source, ("target_achievement_rate",))
+    target_source["achievement_rate"] = target_source["target_achievement_rate"]
+    target_source["display_amount"] = target_source["target_cum"]
+    target_source["series_label"] = "누적 계획선"
+    target_source["series_kind"] = "계획선"
+    target_source["is_selected"] = True
+    target_source["variance_label"] = ""
+    target_source["risk_level_label"] = ""
+
+    actual_source = _finite_chart_rows(
+        chart_source.loc[chart_source["series_type"] == "확정 실적"],
+        ("achievement_rate",),
     )
-    actual_source = chart_source.loc[chart_source["series_type"] == "확정 실적"]
-    forecast_source = chart_source.loc[chart_source["series_type"] == "시나리오 예상"]
+    actual_source["display_amount"] = actual_source["forecast_cum"]
+    actual_source["series_label"] = "확정 실적"
+    actual_source["series_kind"] = "확정 실적"
+    actual_source["is_selected"] = True
+
+    forecast_source = _finite_chart_rows(
+        chart_source.loc[chart_source["series_type"] == "시나리오 예상"],
+        ("achievement_rate",),
+    )
     position_source = build_scenario_target_position_source(scenario_df, selected_scenario_id)
     forecast_source = _attach_scenario_position_fields(forecast_source, position_source)
-    close_day_source = source.loc[
-        source["is_close_day"],
-        ["date", "date_label", "close_type"],
-    ].drop_duplicates("date")
-    close_day_source["date"] = pd.to_datetime(close_day_source["date"], errors="coerce")
-    close_day_source = close_day_source.dropna(subset=["date"])
-    close_day_source["band_start"] = close_day_source["date"] - pd.Timedelta(hours=12)
-    close_day_source["band_end"] = close_day_source["date"] + pd.Timedelta(hours=12)
+    forecast_source["display_amount"] = forecast_source["forecast_cum"]
+    forecast_source["series_label"] = forecast_source["scenario_id"].astype(str)
+    forecast_source["series_kind"] = "시나리오 예상"
 
-    y_max = max(
-        _finite_max(chart_source["achievement_rate"]),
-        _finite_max(target_source["target_achievement_rate"]),
-        1.0,
-    )
-    scenario_order = forecast_source["scenario_id"].drop_duplicates().tolist()
-    selected_id = str(selected_scenario_id or "")
-    final_label_source = _selected_daily_final_label_source(forecast_source, selected_id)
-    as_of_dates = source.loc[source["is_as_of_date"], "date"].drop_duplicates()
-    as_of_source = pd.DataFrame({"as_of_date": as_of_dates.tolist()[:1]})
-    zoom = alt.selection_interval(bind="scales", encodings=["x"], name="weekly_zoom")
-    x_axis = alt.Axis(
-        format="%m/%d",
-        labelAngle=0,
-        tickCount=alt.TimeIntervalStep("week", 1),
-    )
+    goal_dates = chart_source["date"].dropna().sort_values()
+    goal_source = pd.DataFrame()
+    if not goal_dates.empty:
+        monthly_target = pd.to_numeric(chart_source["monthly_target"], errors="coerce").dropna()
+        goal_source = pd.DataFrame(
+            {
+                "date": [goal_dates.iloc[0], goal_dates.iloc[-1]],
+                "date_label": [goal_dates.iloc[0].strftime("%m/%d"), goal_dates.iloc[-1].strftime("%m/%d")],
+                "week_label": ["", ""],
+                "achievement_rate": [1.0, 1.0],
+                "display_amount": [monthly_target.iloc[0] if not monthly_target.empty else float("nan")] * 2,
+                "series_label": ["공식 월 목표 100%"] * 2,
+                "series_kind": ["공식 목표"] * 2,
+                "is_selected": [True, True],
+                "variance_label": ["", ""],
+                "risk_level_label": ["", ""],
+            }
+        )
 
-    close_day_band = (
-        alt.Chart(close_day_source)
-        .mark_rect(color="#FEF3C7", opacity=0.55)
-        .encode(
-            x=alt.X("band_start:T", title=None),
-            x2="band_end:T",
-            tooltip=[
-                alt.Tooltip("date_label:N", title="마감일"),
-                alt.Tooltip("close_type:N", title="마감 유형"),
-            ],
-        )
+    line_source = pd.concat(
+        [frame for frame in (goal_source, target_source, actual_source, forecast_source) if not frame.empty],
+        ignore_index=True,
+        sort=False,
     )
-    week_markers = (
-        alt.Chart(week_marker_source)
-        .mark_rule(color="#E2E8F0", strokeWidth=1)
-        .encode(
-            x=alt.X("week_start:T", title=None),
-            tooltip=[alt.Tooltip("week_label:N", title="주간")],
-        )
+    line_source = _finite_chart_rows(line_source.dropna(subset=["date"]), ("achievement_rate",))
+    if line_source.empty:
+        st.info("주간 시나리오 누적 전망 데이터 없음")
+        return
+
+    scenario_order = forecast_source["series_label"].drop_duplicates().tolist()
+    series_order = ["공식 월 목표 100%", "누적 계획선", "확정 실적", *scenario_order]
+    color_range = ["#DC2626", "#94A3B8", "#1D4ED8", *list(CHART_COLOR_RANGE)]
+    date_order = (
+        line_source.loc[:, ["date", "date_label"]]
+        .drop_duplicates("date")
+        .sort_values("date")["date_label"]
+        .tolist()
     )
-    target_line = (
-        alt.Chart(target_source)
-        .mark_line(color="#94A3B8", strokeDash=[6, 5], strokeWidth=1.8, interpolate="linear")
+    chart = (
+        alt.Chart(line_source)
+        .mark_line(point=alt.OverlayMarkDef(filled=True, size=30), interpolate="linear")
         .encode(
             x=alt.X(
-                "date:T",
+                "date_label:N",
                 title=None,
-                axis=x_axis,
+                sort=date_order,
+                axis=alt.Axis(labelAngle=0, labelLimit=90),
             ),
             y=alt.Y(
-                "target_achievement_rate:Q",
+                "achievement_rate:Q",
                 title="월 목표 달성률",
-                scale=alt.Scale(domain=[0, y_max * 1.08], nice=True),
+                scale=alt.Scale(domain=[0, max(_finite_max(line_source["achievement_rate"]), 1.0) * 1.08], nice=True),
                 axis=alt.Axis(format=".0%"),
             ),
-            tooltip=[
-                alt.Tooltip("week_label:N", title="주간"),
-                alt.Tooltip("target_cum:Q", title="누적 목표선", format=chart_value_format("억원")),
-                alt.Tooltip("target_achievement_rate:Q", title="누적 목표 달성률", format=".1%"),
-            ],
-        )
-    )
-    actual_line = (
-        alt.Chart(actual_source)
-        .mark_line(color="#1D4ED8", strokeWidth=3, interpolate="linear")
-        .encode(
-            x=alt.X(
-                "date:T",
-                title=None,
-                axis=x_axis,
-            ),
-            y=alt.Y("achievement_rate:Q"),
-            tooltip=_daily_forecast_tooltips("확정 누적 실적", include_variance=False),
-        )
-    )
-    forecast_lines = (
-        alt.Chart(forecast_source)
-        .mark_line(interpolate="linear")
-        .encode(
-            x=alt.X(
-                "date:T",
-                title=None,
-                axis=x_axis,
-            ),
-            y=alt.Y("achievement_rate:Q"),
             color=alt.Color(
-                "scenario_id:N",
-                title="시나리오",
-                sort=scenario_order,
-                scale=alt.Scale(range=list(CHART_COLOR_RANGE)),
+                "series_label:N",
+                title="구분",
+                sort=series_order,
+                scale=alt.Scale(domain=series_order, range=color_range[: len(series_order)]),
             ),
-            detail="line_group:N",
+            strokeDash=alt.StrokeDash(
+                "series_kind:N",
+                title="선 구분",
+                scale=alt.Scale(
+                    domain=["공식 목표", "계획선", "확정 실적", "시나리오 예상"],
+                    range=[[7, 5], [5, 4], [1, 0], [1, 0]],
+                ),
+            ),
+            detail="series_label:N",
             opacity=alt.condition("datum.is_selected", alt.value(1.0), alt.value(0.38)),
-            strokeWidth=alt.condition("datum.is_selected", alt.value(3.2), alt.value(1.5)),
-            tooltip=_daily_forecast_tooltips("누적 예상"),
-        )
-    )
-    monthly_rule = (
-        alt.Chart(pd.DataFrame({"goal_rate": [1.0]}))
-        .mark_rule(color="#DC2626", strokeDash=[7, 5], strokeWidth=2)
-        .encode(
-            y="goal_rate:Q",
+            strokeWidth=alt.condition("datum.is_selected", alt.value(3.0), alt.value(1.5)),
             tooltip=[
-                alt.Tooltip(
-                    "goal_rate:Q",
-                    title="공식 월 목표선",
-                    format=".0%",
-                )
+                alt.Tooltip("date:T", title="일자", format="%Y-%m-%d"),
+                alt.Tooltip("week_label:N", title="주간"),
+                alt.Tooltip("series_label:N", title="구분"),
+                alt.Tooltip("display_amount:Q", title="누적 금액", format=chart_value_format("억원")),
+                alt.Tooltip("achievement_rate:Q", title="월 목표 달성률", format=".1%"),
+                alt.Tooltip("variance_label:N", title="목표 대비"),
+                alt.Tooltip("risk_level_label:N", title="위험등급"),
             ],
-        )
-    )
-    as_of_rule = (
-        alt.Chart(as_of_source)
-        .mark_rule(color="#64748B", strokeDash=[2, 3], strokeWidth=1.4)
-        .encode(
-            x="as_of_date:T",
-            tooltip=[alt.Tooltip("as_of_date:T", title="기준일", format="%Y-%m-%d")],
-        )
-    )
-    final_label = (
-        alt.Chart(final_label_source)
-        .mark_text(align="right", baseline="middle", dx=-7, dy=-8, fontSize=11, fontWeight="bold")
-        .encode(
-            x="date:T",
-            y="achievement_rate:Q",
-            text="final_label:N",
-            color=alt.value("#111827"),
-        )
-    )
-    progress_chart = (
-        (
-            close_day_band
-            + week_markers
-            + target_line
-            + actual_line
-            + forecast_lines
-            + monthly_rule
-            + as_of_rule
-            + final_label
         )
         .properties(height=330)
-        .add_params(zoom)
-    )
-
-    chart = (
-        progress_chart
         .configure_axis(labelFontSize=11, titleFontSize=12)
         .configure_legend(labelFontSize=11, titleFontSize=12)
     )
-    st.caption("차트 위에서 마우스 휠 또는 드래그로 주간 구간을 확대/축소할 수 있습니다.")
+    st.caption("공식 월 목표 100%, 누적 계획선, 확정 실적과 시나리오 예상 흐름을 한 차트에서 비교합니다.")
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -9526,6 +9409,39 @@ def _finite_max(values: pd.Series) -> float:
     if numeric_values.empty:
         return 0.0
     return float(numeric_values.max())
+
+
+def _finite_chart_rows(source: pd.DataFrame, required_columns: tuple[str, ...]) -> pd.DataFrame:
+    """Return rows whose chart-axis fields are present and finite."""
+    if source.empty or not set(required_columns).issubset(source.columns):
+        return pd.DataFrame(columns=source.columns)
+    result = source.copy()
+    for column in required_columns:
+        numeric = pd.to_numeric(result[column], errors="coerce")
+        result[column] = numeric.where(numeric.map(math.isfinite))
+    return result.dropna(subset=list(required_columns)).reset_index(drop=True)
+
+
+def _render_altair_chart_inline(chart: alt.TopLevelMixin) -> None:
+    """Inline named datasets so Vega receives layered chart data in one payload."""
+    spec = chart.to_dict(validate=True)
+    datasets = spec.pop("datasets", {})
+
+    def inline_named_data(node: object) -> None:
+        if isinstance(node, dict):
+            data = node.get("data")
+            if isinstance(data, dict):
+                dataset_name = data.get("name")
+                if dataset_name in datasets:
+                    node["data"] = {"values": datasets[dataset_name]}
+            for value in node.values():
+                inline_named_data(value)
+        elif isinstance(node, list):
+            for value in node:
+                inline_named_data(value)
+
+    inline_named_data(spec)
+    st.vega_lite_chart(spec=spec, use_container_width=True)
 
 
 def _selected_daily_final_label_source(

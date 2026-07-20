@@ -32,6 +32,8 @@ def test_result_file_name_rule(tmp_path: Path) -> None:
     assert run_audit.gate_log_path("G09", log_dir).name == "gate_runner_G09.json"
     assert run_audit.gate_log_path("all", log_dir).name == "gate_runner_ALL.json"
     assert run_audit.pytest_log_path(log_dir).name == "pytest_result.txt"
+    assert run_audit.forbidden_scan_log_path(log_dir).name == "forbidden_pattern_scan.txt"
+    assert run_audit.outputs_mtime_log_path(log_dir).name == "outputs_mtime_check.txt"
 
 
 def test_subprocess_failure_is_structured_and_logged(
@@ -108,3 +110,30 @@ def test_pytest_capture_writes_text_log(tmp_path: Path, monkeypatch) -> None:
     assert result["status"] == "FAIL"
     assert result["returncode"] == 1
     assert (log_dir / "pytest_result.txt").read_text(encoding="utf-8") == "failed tests\n"
+
+
+def test_operational_logs_cover_forbidden_scan_and_outputs_mtime(tmp_path: Path) -> None:
+    latest_dir = tmp_path / "outputs" / "latest"
+    latest_dir.mkdir(parents=True)
+    (latest_dir / "daily_report_sales_20260715_v2.xlsx").write_bytes(b"xlsx")
+    log_dir = tmp_path / "audit" / "logs"
+
+    forbidden_path = run_audit.write_forbidden_scan_log(
+        {
+            "forbidden_patterns_found": [],
+            "test_only_patterns_found": ["tests/test_guard.py:1: day_name =="],
+        },
+        repo_root=tmp_path,
+        log_dir=log_dir,
+    )
+    mtime_path = run_audit.write_outputs_mtime_log(
+        repo_root=tmp_path,
+        log_dir=log_dir,
+    )
+
+    forbidden_text = forbidden_path.read_text(encoding="utf-8")
+    mtime_text = mtime_path.read_text(encoding="utf-8")
+    assert "PASS: no source hits" in forbidden_text
+    assert "test_guard.py" in forbidden_text
+    assert "outputs/latest/daily_report_sales_20260715_v2.xlsx" in mtime_text
+    assert "size=4" in mtime_text

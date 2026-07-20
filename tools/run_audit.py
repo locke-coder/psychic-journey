@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import subprocess
 import sys
@@ -12,6 +13,8 @@ from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOG_DIR = REPO_ROOT / "audit" / "logs"
+FORBIDDEN_SCAN_NAME = "forbidden_pattern_scan.txt"
+OUTPUTS_MTIME_NAME = "outputs_mtime_check.txt"
 SUPPORTED_GATES = ("ALL", "G09", "G10", "G12", "G13", "G15", "G18")
 RESULT_LIST_KEYS = (
     "required_files_missing",
@@ -60,6 +63,22 @@ def pytest_log_path(
 ) -> Path:
     """Return the pytest text log path."""
     return ensure_log_dir(log_dir, repo_root=repo_root) / "pytest_result.txt"
+
+
+def forbidden_scan_log_path(
+    log_dir: Path | str | None = None,
+    *,
+    repo_root: Path | str | None = None,
+) -> Path:
+    return ensure_log_dir(log_dir, repo_root=repo_root) / FORBIDDEN_SCAN_NAME
+
+
+def outputs_mtime_log_path(
+    log_dir: Path | str | None = None,
+    *,
+    repo_root: Path | str | None = None,
+) -> Path:
+    return ensure_log_dir(log_dir, repo_root=repo_root) / OUTPUTS_MTIME_NAME
 
 
 def run_gate_runner(
@@ -150,17 +169,73 @@ def run_audit(
     )
     gate_result = run_gate_runner(normalized, repo_root=repo_root, log_dir=log_dir)
     gate_path = gate_log_path(normalized, log_dir, repo_root=repo_root)
+    forbidden_path = write_forbidden_scan_log(
+        gate_result,
+        repo_root=repo_root,
+        log_dir=log_dir,
+    )
+    mtime_path = write_outputs_mtime_log(repo_root=repo_root, log_dir=log_dir)
 
     summary: dict[str, Any] = {
         "gate": normalized,
         "status": gate_result.get("status", "FAIL"),
         "gate_log": str(gate_path),
         "pytest_log": pytest_result["log_path"] if pytest_result else None,
+        "forbidden_scan_log": str(forbidden_path),
+        "outputs_mtime_log": str(mtime_path),
     }
     if pytest_result is not None:
         summary["pytest_status"] = pytest_result["status"]
         summary["pytest_returncode"] = pytest_result["returncode"]
     return summary
+
+
+def write_forbidden_scan_log(
+    gate_result: dict[str, Any],
+    *,
+    repo_root: Path | str | None = None,
+    log_dir: Path | str | None = None,
+) -> Path:
+    """Persist source and test-only forbidden-pattern findings from the gate result."""
+    output_path = forbidden_scan_log_path(log_dir, repo_root=repo_root)
+    source_hits = [str(value) for value in gate_result.get("forbidden_patterns_found") or []]
+    test_hits = [str(value) for value in gate_result.get("test_only_patterns_found") or []]
+    lines = ["Forbidden Pattern Scan", "", "source_hits:"]
+    lines.extend(f"- {value}" for value in source_hits)
+    if not source_hits:
+        lines.append("- PASS: no source hits")
+    lines.extend(["", "test_only_hits:"])
+    lines.extend(f"- {value}" for value in test_hits)
+    if not test_hits:
+        lines.append("- none")
+    output_path.write_text(_with_trailing_newline("\n".join(lines)), encoding="utf-8")
+    return output_path
+
+
+def write_outputs_mtime_log(
+    *,
+    repo_root: Path | str | None = None,
+    log_dir: Path | str | None = None,
+) -> Path:
+    """Persist a read-only inventory of the current outputs/latest artifacts."""
+    root = Path(repo_root) if repo_root is not None else REPO_ROOT
+    output_path = outputs_mtime_log_path(log_dir, repo_root=root)
+    latest_dir = root / "outputs" / "latest"
+    files = sorted(
+        (path for path in latest_dir.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(root).as_posix().lower(),
+    ) if latest_dir.is_dir() else []
+    lines = ["Outputs Latest Mtime Check", f"directory: {latest_dir}", ""]
+    if not files:
+        lines.append("- no files")
+    for path in files:
+        stat = path.stat()
+        modified_at = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat()
+        lines.append(
+            f"- {path.relative_to(root).as_posix()} | modified_at={modified_at} | size={stat.st_size}"
+        )
+    output_path.write_text(_with_trailing_newline("\n".join(lines)), encoding="utf-8")
+    return output_path
 
 
 def write_json_log(result: dict[str, Any], path: Path | str) -> Path:
