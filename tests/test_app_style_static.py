@@ -131,3 +131,11 @@ def test_no_forbidden_close_day_inference_terms_in_style_sources() -> None:
     }.items():
         for term in forbidden_terms:
             assert term not in source, f"{source_name} contains {term}"
+
+
+def test_primary_and_form_submit_buttons_keep_white_text() -> None:
+    css = ui_styles.get_global_styles()
+
+    assert 'button[kind="primary"] p' in css
+    assert 'div[data-testid="stFormSubmitButton"] button p' in css
+    assert "color: #ffffff !important;" in css

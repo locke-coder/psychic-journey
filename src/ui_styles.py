@@ -664,6 +664,12 @@ def get_global_styles() -> str:
     div[data-testid="stFormSubmitButton"] button {
         border-color: var(--brand-action) !important;
         background: var(--brand-action) !important;
+        color: #ffffff !important;
+    }
+
+    button[kind="primary"] p,
+    div[data-testid="stFormSubmitButton"] button p {
+        color: #ffffff !important;
     }
 
     /* Shared component language across every routed page. */
