@@ -204,6 +204,7 @@ HISTORICAL_SAMPLE_INPUT_PATH = REPO_ROOT / "data" / "sample" / "historical_input
 OUTPUT_DIR = REPO_ROOT / "outputs"
 SAVED_ACTUALS_PATH = OUTPUT_DIR / "saved_actuals.csv"
 PRIVATE_SAVED_ACTUALS_PATH = "actuals/saved_actuals.csv"
+LOCAL_DEMO_FRESH_START_ENV = "LOCAL_DEMO_FRESH_START"
 PRIVATE_REPORTS_LATEST_PATH = "reports/latest"
 AUDIT_READONLY_QUERY_PARAM = "audit_readonly"
 AUDIT_READONLY_TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -1395,6 +1396,11 @@ def _get_current_input_state() -> tuple[pd.DataFrame, str]:
     if isinstance(stored_df, pd.DataFrame):
         return stored_df.copy(), str(stored_source or SAMPLE_INPUT_SOURCE_LABEL)
 
+    if _local_demo_fresh_start_enabled():
+        prepared_df = _load_packaged_sample_for_app("current_input")
+        _store_current_input_state(prepared_df, SAMPLE_INPUT_SOURCE_LABEL)
+        return prepared_df, SAMPLE_INPUT_SOURCE_LABEL
+
     df, source_info = load_sample_with_source("current_input")
     _warn_operator_sample_fallback("현재 입력 샘플", source_info)
     if source_info.get("source") in {"operator", "github"}:
@@ -1408,6 +1414,11 @@ def _get_current_input_state() -> tuple[pd.DataFrame, str]:
             source_label = SAVED_ACTUALS_SOURCE_LABEL
     _store_current_input_state(prepared_df, source_label)
     return prepared_df, source_label
+
+
+def _local_demo_fresh_start_enabled() -> bool:
+    raw_value = os.environ.get(LOCAL_DEMO_FRESH_START_ENV, "").strip().lower()
+    return raw_value in {"1", "true", "yes", "on"}
 
 
 def _store_current_input_state(df: pd.DataFrame, source_label: str) -> None:
@@ -7532,6 +7543,7 @@ def _render_operator_sample_panel(
     status_cols[2].metric("화면 row 수", str(len(df)))
     status_cols[3].metric("저장 row 수", saved_rows_display)
     st.caption(f"운영 저장 위치: {_short_display_path(operator_location)}")
+
     if metadata_error is not None:
         _render_operator_sample_store_error("상태 확인", metadata_error)
 
@@ -7570,7 +7582,7 @@ def _render_operator_sample_panel(
                 f"{result.get('rows', len(working_df))}행"
             )
             _render_operator_sample_warnings(result.get("warnings") or [])
-        elif result is not None:
+        else:
             st.error("운영 기본값으로 저장하지 못했습니다. 아래 검증 오류를 확인해 주세요.")
             _render_operator_sample_errors(result.get("errors") or [])
             _render_operator_sample_warnings(result.get("warnings") or [])
@@ -7582,15 +7594,14 @@ def _render_operator_sample_panel(
         loaded_df, source_info, load_error = _try_load_operator_sample_for_ui(kind)
         if load_error is not None:
             _render_operator_sample_store_error("다시 불러오기", load_error)
-        elif loaded_df is not None and source_info is not None:
-            if source_info.get("source") in {"operator", "github"}:
-                working_df = loaded_df
-                source_label = OPERATOR_SAMPLE_SOURCE_LABEL
-                _store_operator_sample_state(kind, working_df, source_label)
-                st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
-            else:
-                st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
-                _render_operator_sample_warnings(source_info.get("warnings") or [])
+        elif source_info.get("source") in {"operator", "github"}:
+            working_df = loaded_df
+            source_label = OPERATOR_SAMPLE_SOURCE_LABEL
+            _store_operator_sample_state(kind, working_df, source_label)
+            st.success(f"저장된 운영 기본값 {len(working_df)}행을 다시 불러왔습니다.")
+        else:
+            st.warning("저장된 운영 기본값을 불러오지 못해 내장 샘플을 유지합니다.")
+            _render_operator_sample_warnings(source_info.get("warnings") or [])
 
     if packaged_col.button(
         "내장 샘플로 화면 초기화",
@@ -7689,7 +7700,11 @@ def _render_input_editor(
     audit_readonly: bool = False,
 ) -> pd.DataFrame:
     st.header("2. 입력 수정")
-    saved_actuals = _load_saved_actuals_for_ui()
+    saved_actuals = (
+        pd.DataFrame(columns=SAVED_ACTUAL_COLUMNS)
+        if _local_demo_fresh_start_enabled()
+        else _load_saved_actuals_for_ui()
+    )
     df, default_source = apply_latest_upload_policy(
         df,
         source_label,
@@ -7767,7 +7782,7 @@ def _render_input_editor(
                 f"실적 보조 저장 파일도 갱신했습니다: {_short_display_path(saved_path)}."
             )
             _render_operator_sample_warnings(operator_result.get("warnings") or [])
-        else:
+        elif result is not None:
             st.warning(
                 "입력값 검증에 실패해 Private 데이터 저장소에는 아무 파일도 갱신하지 않았습니다."
             )

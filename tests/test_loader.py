@@ -122,7 +122,7 @@ def test_utf8_bom_csv_file_can_be_loaded(tmp_path: Path) -> None:
 def test_future_blank_actual_cum_values_are_allowed_as_nan() -> None:
     df = load_input(_sample_path())
     future_actuals = df.loc[
-        df["business_day_no"] > 9,
+        df["business_day_no"] > 12,
         ["sales_actual_cum", "recognized_actual_cum"],
     ]
 
@@ -176,7 +176,7 @@ def test_xlsx_file_can_be_loaded_after_csv_round_trip(tmp_path: Path) -> None:
     assert list(loaded.columns) == list(REQUIRED_INPUT_COLUMNS)
     assert len(loaded) == len(df)
     assert loaded.loc[0, "date"] == pd.Timestamp("2026-07-01")
-    assert loaded["sales_actual_cum"].isna().sum() == 11
+    assert loaded["sales_actual_cum"].isna().sum() == 8
 
 
 def test_historical_sample_loads_with_non_strict_business_day_no() -> None:

@@ -302,6 +302,17 @@ def test_default_as_of_date_uses_first_input_date_when_no_prior_business_day() -
     assert as_of_date == pd.Timestamp("2026-06-01")
 
 
+def test_local_demo_fresh_start_flag_is_explicit(monkeypatch) -> None:
+    monkeypatch.delenv(app_module.LOCAL_DEMO_FRESH_START_ENV, raising=False)
+    assert app_module._local_demo_fresh_start_enabled() is False
+
+    monkeypatch.setenv(app_module.LOCAL_DEMO_FRESH_START_ENV, "1")
+    assert app_module._local_demo_fresh_start_enabled() is True
+
+    monkeypatch.setenv(app_module.LOCAL_DEMO_FRESH_START_ENV, "false")
+    assert app_module._local_demo_fresh_start_enabled() is False
+
+
 def test_app_builds_visual_chart_data_from_sample_results() -> None:
     df = load_input(SAMPLE_INPUT_PATH)
     config = build_runtime_config(load_model_config(), 1.30, 1.50)

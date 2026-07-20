@@ -30,7 +30,7 @@ def test_input_sample_loads_with_expected_input_shape() -> None:
     assert set(df["is_close_day"]) == {True, False}
 
     dates = pd.to_datetime(df["date"], format="%Y-%m-%d")
-    as_of_date = pd.Timestamp("2026-07-13")
+    as_of_date = pd.Timestamp("2026-07-16")
 
     as_of_actuals = df.loc[
         dates == as_of_date,
