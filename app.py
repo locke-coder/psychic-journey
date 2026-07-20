@@ -79,7 +79,6 @@ from src.private_data_store import (
     PrivateDataStoreConfigurationError,
     PrivateDataStoreConflictError,
     PrivateDataStoreError,
-    PrivateDataStoreRateLimitError,
     PrivateDataStoreUnavailableError,
     delete_private_data_file,
     is_private_data_store_enabled,
@@ -7491,7 +7490,9 @@ def _render_operator_sample_store_error(
             "관리자가 Streamlit Secrets의 PRIVATE_DATA_REPO, PRIVATE_DATA_BRANCH, "
             "PRIVATE_DATA_TOKEN 설정을 확인해야 합니다."
         )
-    elif isinstance(exc, PrivateDataStoreRateLimitError):
+    # Avoid a startup ImportError while Streamlit briefly serves an older
+    # private_data_store module during a rolling deployment.
+    elif exc.__class__.__name__ == "PrivateDataStoreRateLimitError":
         st.caption(
             "GitHub 요청 제한에 도달했습니다. 잠시 기다린 뒤 다시 시도하고, "
             "반복되면 안전 진단과 GitHub 상태를 관리자에게 전달해 주세요."

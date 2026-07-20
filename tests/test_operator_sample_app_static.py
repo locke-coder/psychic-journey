@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -30,6 +31,20 @@ def test_operator_sample_private_store_errors_are_rendered_without_page_failure(
     assert "except PrivateDataStoreError as exc:" in app_source
     assert "_render_operator_sample_store_error" in app_source
     assert "Contents: Read and write" in app_source
+
+
+def test_rate_limit_error_import_tolerates_streamlit_deploy_cache_skew() -> None:
+    app_source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+    module = ast.parse(app_source)
+    private_store_imports = {
+        alias.name
+        for node in module.body
+        if isinstance(node, ast.ImportFrom) and node.module == "src.private_data_store"
+        for alias in node.names
+    }
+
+    assert "PrivateDataStoreRateLimitError" not in private_store_imports
+    assert 'exc.__class__.__name__ == "PrivateDataStoreRateLimitError"' in app_source
 
 
 def test_source_has_no_close_day_auto_inference_patterns() -> None:
