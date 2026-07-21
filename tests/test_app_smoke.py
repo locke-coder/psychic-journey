@@ -1484,7 +1484,7 @@ def test_prepare_input_editor_frame_coerces_fully_blank_text_columns() -> None:
 
     source = pd.DataFrame(
         {
-            "date": pd.to_datetime(["2026-07-01", "2026-07-02"]),
+            "date": ["2026-07-01", "2026-07-02"],
             "day_name": ["Wed", "Thu"],
             "business_day_no": [1, 2],
             "is_close_day": [False, True],
@@ -1500,6 +1500,8 @@ def test_prepare_input_editor_frame_coerces_fully_blank_text_columns() -> None:
     prepared = app_module._prepare_input_editor_frame(source)
 
     assert prepared is not source
+    assert pd.api.types.is_datetime64_any_dtype(prepared["date"])
+    assert not pd.api.types.is_datetime64_any_dtype(source["date"])
     assert prepared["memo"].tolist() == ["", ""]
     assert all(isinstance(value, str) for value in prepared["memo"])
     assert prepared["is_close_day"].tolist() == [False, True]

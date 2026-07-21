@@ -7891,6 +7891,9 @@ def _input_editor_column_config() -> dict[str, object]:
 def _prepare_input_editor_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Return an editor-safe copy without changing forecast input semantics."""
     prepared = df.copy()
+    if "date" in prepared.columns:
+        raw_dates = prepared["date"].replace(r"^\s*$", pd.NA, regex=True)
+        prepared["date"] = pd.to_datetime(raw_dates, errors="coerce")
     for column in ("day_name", "close_type", "memo"):
         if column not in prepared.columns:
             continue
