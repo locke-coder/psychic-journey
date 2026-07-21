@@ -7557,7 +7557,7 @@ def _render_operator_sample_panel(
 
     editor_key = f"operator_sample_editor_{kind}"
     edited_df = st.data_editor(
-        df,
+        _prepare_input_editor_frame(df),
         column_config=_input_editor_column_config(),
         disabled=audit_readonly,
         hide_index=True,
@@ -7758,7 +7758,7 @@ def _render_input_editor(
         st.rerun()
 
     edited_df = st.data_editor(
-        df,
+        _prepare_input_editor_frame(df),
         column_config=_input_editor_column_config(),
         disabled=_non_editable_input_columns(df),
         hide_index=True,
@@ -7886,6 +7886,16 @@ def _input_editor_column_config() -> dict[str, object]:
         ),
         "memo": st.column_config.TextColumn("메모"),
     }
+
+
+def _prepare_input_editor_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Return an editor-safe copy without changing forecast input semantics."""
+    prepared = df.copy()
+    for column in ("day_name", "close_type", "memo"):
+        if column not in prepared.columns:
+            continue
+        prepared[column] = prepared[column].astype("string").fillna("").astype(object)
+    return prepared
 
 
 def _non_editable_input_columns(df: pd.DataFrame) -> list[str]:

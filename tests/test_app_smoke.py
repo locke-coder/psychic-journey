@@ -1475,6 +1475,45 @@ def test_direct_input_edits_are_normalized_and_used_for_calculation() -> None:
     )
 
 
+def test_prepare_input_editor_frame_coerces_fully_blank_text_columns() -> None:
+    import pyarrow as pa
+    from streamlit.elements.widgets.data_editor import (
+        _check_type_compatibilities,
+        determine_dataframe_schema,
+    )
+
+    source = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-07-01", "2026-07-02"]),
+            "day_name": ["Wed", "Thu"],
+            "business_day_no": [1, 2],
+            "is_close_day": [False, True],
+            "close_type": ["normal", "close"],
+            "sales_target_daily": [1.0, 2.0],
+            "recognized_target_daily": [1.0, 2.0],
+            "sales_actual_cum": [1.0, 3.0],
+            "recognized_actual_cum": [1.0, 3.0],
+            "memo": pd.Series([float("nan"), float("nan")], dtype=float),
+        }
+    )
+
+    prepared = app_module._prepare_input_editor_frame(source)
+
+    assert prepared is not source
+    assert prepared["memo"].tolist() == ["", ""]
+    assert all(isinstance(value, str) for value in prepared["memo"])
+    assert prepared["is_close_day"].tolist() == [False, True]
+    assert source["memo"].isna().all()
+
+    arrow_schema = pa.Table.from_pandas(prepared).schema
+    dataframe_schema = determine_dataframe_schema(prepared, arrow_schema)
+    _check_type_compatibilities(
+        prepared,
+        app_module._input_editor_column_config(),
+        dataframe_schema,
+    )
+
+
 def test_saved_actuals_are_applied_as_future_defaults(tmp_path) -> None:
     df = load_input(SAMPLE_INPUT_PATH)
     edited_df = df.copy()
