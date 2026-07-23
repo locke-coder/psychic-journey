@@ -24,7 +24,9 @@ def test_home_keeps_decision_surfaces_and_removes_detail_tab_duplicates() -> Non
     assert "_render_projection_chart_card" in source
     assert "_render_home_decision_panel" in source
     assert "_build_home_achievement_donut_html" in source
-    assert "st.columns([1, 2], gap=\"small\")" in source
+    assert "st.columns([3.15, 1.05], gap=\"medium\")" not in source
+    assert "render_ai_copilot" not in source
+    assert "st.columns([1, 2], gap=\"small\")" not in source
     assert "_render_home_status_facts" not in source
     assert "_render_home_scenario_summary" not in source
     assert "_render_home_overachievement_strategy_summary" not in source

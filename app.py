@@ -1615,6 +1615,7 @@ def _render_same_window_top_status(active_page: str, meta: Mapping[str, object])
         for primary in (" is-primary" if index == 0 else "",)
     )
     st.markdown(
+        '<span class="deploy-hover-zone" aria-hidden="true"></span>'
         '<section class="same-window-top-status">'
         '<div class="same-window-top-status__brand">'
         '<span class="pace-brand-mark"></span>'
@@ -1691,21 +1692,17 @@ def _render_home_workbench_page(context: Mapping[str, Any]) -> None:
         validation_result,
         next_close_result,
     )
-
-    insight_col, chart_col = st.columns([1, 2], gap="small")
-    with insight_col:
-        achievement_card_html = _build_home_achievement_donut_html(
-            selected_row,
-            validation_result,
-        )
-        _render_home_decision_panel(
-            selected_row,
-            validation_result,
-            next_close_result,
-            achievement_card_html=achievement_card_html,
-        )
-    with chart_col:
-        _render_projection_chart_card(context)
+    achievement_card_html = _build_home_achievement_donut_html(
+        selected_row,
+        validation_result,
+    )
+    _render_home_decision_panel(
+        selected_row,
+        validation_result,
+        next_close_result,
+        achievement_card_html=achievement_card_html,
+    )
+    _render_projection_chart_card(context)
 
 
 def _render_month_close_status_panel(

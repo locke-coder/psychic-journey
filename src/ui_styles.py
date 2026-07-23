@@ -3069,9 +3069,338 @@ def get_app_layout_styles_css() -> str:
         """
 
 
+def get_linear_bento_css() -> str:
+    """Return the Linear/Bento layout and restrained glass interaction layer."""
+    return """
+    <style>
+    :root,
+    .stApp {
+        --linear-bg: #f6f7f9;
+        --linear-surface: #ffffff;
+        --linear-surface-soft: #fafbfc;
+        --linear-ink: #17191d;
+        --linear-muted: #717680;
+        --linear-line: #e7e9ed;
+        --linear-line-strong: #d9dde4;
+        --linear-accent: #5865f2;
+        --linear-accent-soft: #eef0ff;
+        --linear-success: #159a61;
+        --linear-success-soft: #eaf8f1;
+        --linear-warning: #b56c00;
+        --linear-warning-soft: #fff5df;
+        --linear-radius: 16px;
+        --linear-radius-lg: 22px;
+        --linear-shadow: 0 18px 48px rgba(25, 30, 43, .09), 0 2px 8px rgba(25, 30, 43, .04);
+    }
+
+    .stApp {
+        background: var(--linear-bg) !important;
+        color: var(--linear-ink) !important;
+    }
+
+    [data-testid="stAppViewContainer"] {
+        timeline-scope: --pace-main-scroll;
+    }
+
+    [data-testid="stMain"] {
+        scroll-timeline-name: --pace-main-scroll;
+        scroll-timeline-axis: block;
+    }
+
+    @keyframes deploy-header-auto-hide {
+        from {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        to {
+            transform: translateY(-100%);
+            opacity: 0;
+        }
+    }
+
+    [data-testid="stHeader"] {
+        background: #f6f7f9 !important;
+        animation: deploy-header-auto-hide linear both;
+        animation-duration: auto;
+        animation-timeline: --pace-main-scroll;
+        animation-range: 0 72px;
+        transition: transform .22s ease, opacity .18s ease !important;
+        will-change: transform, opacity;
+    }
+
+    .deploy-hover-zone {
+        position: fixed;
+        inset: 0 0 auto 220px;
+        z-index: 999999;
+        height: 10px;
+        pointer-events: auto;
+    }
+
+    .stApp:has(.deploy-hover-zone:hover) [data-testid="stHeader"],
+    [data-testid="stHeader"]:hover {
+        animation: none !important;
+        transform: translateY(0) !important;
+        opacity: 1 !important;
+        background: #f6f7f9 !important;
+        pointer-events: auto !important;
+    }
+
+    .block-container {
+        max-width: 1580px !important;
+        padding-top: 1rem !important;
+        padding-bottom: 3rem !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        width: 220px !important;
+        min-width: 220px !important;
+        max-width: 220px !important;
+        background: #fbfbfc !important;
+        border-right: 1px solid var(--linear-line) !important;
+    }
+
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        padding-top: 1rem !important;
+        background: #fbfbfc !important;
+        color: var(--linear-ink) !important;
+    }
+
+    .nav-brand {
+        padding: 4px 6px 14px !important;
+        border-bottom: 0 !important;
+    }
+
+    .nav-brand__mark {
+        width: 30px !important;
+        height: 30px !important;
+        border-radius: 9px !important;
+        background: #242832 !important;
+        color: #ffffff !important;
+        box-shadow: none !important;
+    }
+
+    .same-window-nav-group {
+        margin: 16px 8px 6px !important;
+        color: #9a9fa9 !important;
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        letter-spacing: .04em !important;
+        text-transform: uppercase;
+    }
+
+    section[data-testid="stSidebar"] .stButton button {
+        min-height: 38px !important;
+        border: 0 !important;
+        border-radius: 10px !important;
+        background: transparent !important;
+        color: #666c77 !important;
+        box-shadow: none !important;
+        justify-content: flex-start !important;
+        padding: 0 10px !important;
+        transition: background-color .18s ease, color .18s ease, transform .18s ease !important;
+    }
+
+    section[data-testid="stSidebar"] .stButton button:hover {
+        background: #eef0f3 !important;
+        color: #272b32 !important;
+        transform: translateX(2px);
+    }
+
+    section[data-testid="stSidebar"] .stButton button p {
+        color: #666c77 !important;
+    }
+
+    section[data-testid="stSidebar"] .stButton button[kind="primary"] {
+        background: #e9ebef !important;
+        color: #20242b !important;
+        font-weight: 700 !important;
+    }
+
+    section[data-testid="stSidebar"] .stButton button[kind="primary"] p {
+        color: #20242b !important;
+    }
+
+    .security-warning-block {
+        margin: 20px 4px 0 !important;
+        border: 1px solid var(--linear-line) !important;
+        border-radius: 12px !important;
+        background: var(--linear-surface-soft) !important;
+        padding: 11px !important;
+        box-shadow: none !important;
+    }
+
+    .security-warning-block strong,
+    .security-warning-block__label {
+        color: #68707d !important;
+    }
+
+    div[data-testid="stElementContainer"]:has(.same-window-top-status) {
+        position: sticky !important;
+        top: .65rem !important;
+        z-index: 40 !important;
+        transition: top .22s ease !important;
+    }
+
+    .stApp:has(.deploy-hover-zone:hover)
+        div[data-testid="stElementContainer"]:has(.same-window-top-status),
+    .stApp:has([data-testid="stHeader"]:hover)
+        div[data-testid="stElementContainer"]:has(.same-window-top-status) {
+        top: 60px !important;
+    }
+
+    .same-window-top-status {
+        position: relative !important;
+        min-height: 58px !important;
+        margin: 0 0 20px !important;
+        padding: 9px 12px 9px 14px !important;
+        border: 1px solid rgba(225, 228, 234, .9) !important;
+        border-radius: 18px !important;
+        background: rgba(253, 253, 254, .78) !important;
+        backdrop-filter: blur(22px) saturate(1.2);
+        -webkit-backdrop-filter: blur(22px) saturate(1.2);
+        box-shadow: 0 8px 28px rgba(29, 34, 47, .07) !important;
+        transition: box-shadow .22s ease, transform .22s ease !important;
+    }
+
+    .same-window-top-status:hover {
+        box-shadow: 0 12px 34px rgba(29, 34, 47, .1) !important;
+        transform: translateY(-1px);
+    }
+
+    .same-window-top-status__brand .pace-brand-mark {
+        width: 29px !important;
+        height: 29px !important;
+        border: 0 !important;
+        border-radius: 9px !important;
+        background: #242832 !important;
+    }
+
+    .same-window-top-status__brand .pace-brand-mark::after {
+        border-color: #ffffff !important;
+    }
+
+    .same-window-top-status__page {
+        font-size: 12px !important;
+        color: var(--linear-muted) !important;
+    }
+
+    .pace-pill {
+        min-height: 30px !important;
+        border: 1px solid var(--linear-line) !important;
+        border-radius: 10px !important;
+        background: rgba(255, 255, 255, .76) !important;
+        color: #5d636e !important;
+        box-shadow: none !important;
+        font-size: 10px !important;
+    }
+
+    .pace-pill.is-primary {
+        border-color: #d9dcff !important;
+        background: var(--linear-accent-soft) !important;
+        color: #444fcf !important;
+    }
+
+    .month-close-hero,
+    .decision-panel,
+    .achievement-card,
+    .metric-card-compact,
+    div[data-testid="stContainer"]:has(.projection-chart-card) {
+        border: 1px solid var(--linear-line) !important;
+        border-radius: var(--linear-radius) !important;
+        background: var(--linear-surface) !important;
+        box-shadow: 0 1px 2px rgba(22, 27, 36, .025) !important;
+    }
+
+    .month-close-hero {
+        border-top: 1px solid var(--linear-line) !important;
+        padding: 18px 19px !important;
+        margin-bottom: 12px !important;
+    }
+
+    .month-close-hero h1,
+    .page-header h1 {
+        color: var(--linear-ink) !important;
+        font-size: 25px !important;
+        line-height: 1.15 !important;
+        letter-spacing: -.04em !important;
+    }
+
+    .month-close-hero__eyebrow,
+    .page-header__eyebrow {
+        color: #777d88 !important;
+        font-size: 10px !important;
+        letter-spacing: .04em !important;
+    }
+
+    .month-close-hero__item,
+    .metric-card-compact {
+        border-color: var(--linear-line) !important;
+        background: var(--linear-surface) !important;
+    }
+
+    .month-close-hero__item strong,
+    .metric-card-compact strong {
+        color: var(--linear-ink) !important;
+        letter-spacing: -.035em !important;
+    }
+
+    .strategy-badge,
+    .status-badge {
+        border-radius: 9px !important;
+        box-shadow: none !important;
+    }
+
+    .card,
+    .month-close-hero,
+    .decision-panel,
+    .metric-card-compact,
+    div[data-testid="stContainer"]:has(.projection-chart-card) {
+        transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease !important;
+    }
+
+    .month-close-hero:hover,
+    .decision-panel:hover,
+    .metric-card-compact:hover,
+    div[data-testid="stContainer"]:has(.projection-chart-card):hover {
+        border-color: var(--linear-line-strong) !important;
+        box-shadow: 0 8px 24px rgba(25, 30, 43, .055) !important;
+        transform: translateY(-1px);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        [data-testid="stHeader"] {
+            transition: none !important;
+        }
+
+        *,
+        *::before,
+        *::after {
+            scroll-behavior: auto !important;
+            transition-duration: .01ms !important;
+            animation-duration: .01ms !important;
+            animation-iteration-count: 1 !important;
+        }
+    }
+
+    @media (max-width: 1180px) {
+        .deploy-hover-zone {
+            left: 0;
+        }
+
+    }
+    </style>
+    """
+
+
 def get_app_styles_css() -> str:
     """Return the app-owned CSS layers in injection order."""
-    return "\n".join((get_app_base_styles_css(), get_app_layout_styles_css()))
+    return "\n".join(
+        (
+            get_app_base_styles_css(),
+            get_app_layout_styles_css(),
+            get_linear_bento_css(),
+        )
+    )
 
 
 def inject_app_styles(st_module: Any | None = None, pace_css: str | None = None) -> None:
@@ -3084,3 +3413,4 @@ def inject_app_styles(st_module: Any | None = None, pace_css: str | None = None)
         st_module.markdown(pace_css, unsafe_allow_html=True)
     st_module.markdown(get_app_layout_styles_css(), unsafe_allow_html=True)
     st_module.markdown(get_global_styles(), unsafe_allow_html=True)
+    st_module.markdown(get_linear_bento_css(), unsafe_allow_html=True)
